@@ -1,9 +1,14 @@
 device: "cuda"
+max_workers: 4
+pointcloud:
+  # World is the master RGB camera, not the original dataset's table frame.
+  # null keeps valid positive depth without a spatial crop.
+  crop_limits: null
 sam2:
-  model_checkpoint: "config/checkpoints/sam2/sam2.1_hiera_large.pt"
+  model_checkpoint: "${oc.env:HOME}/models/sam2.1/sam2.1_hiera_large.pt"
   model_config: "config/sam2_config/sam2.1_hiera_l.yaml"
 mano:
-  model_path: "config/mano_models"
+  model_path: "${oc.env:HOME}/models/mano"
   use_pca: true
   flat_hand_mean: false
   num_pca_comps: 45
@@ -15,19 +20,17 @@ mp_hand:
   running_mode: "video"
   frame_rate: 30
   model_asset_path: "config/checkpoints/mediapipe/hand_landmarker.task"
-  device: gpu
+  device: cpu
 camera_serials:
   rs_serials:
-    - "105322251564"
-    - "043422252387"
-    - "037522251142"
-    - "105322251225"
-    - "108222250342"
-    - "117222250549"
-    - "046122250168"
-    - "115422250549"
-  rs_master: "105322251564"
-  hl_serial: hololens2-71l1uk
+    - "246322300746"
+    - "338522300613"
+    - "338522302174"
+    - "341222301246"
+    - "342622301386"
+    - "342622302051"
+  rs_master: "338522300613"
+  hl_serial: no_hololens
 optimization:
   hand_pose_solver:
     lr: 0.001
@@ -44,17 +47,18 @@ optimization:
     w_smooth_acc_rot: 1.0
     w_smooth_acc_trans: 1.0
     smooth_window_size: 1
+    # Initialization only: require >=2-view hand support throughout a short gap.
+    # Longer/unsupported gaps remain invalid and do not enter temporal smoothing.
+    max_init_gap_frames: 5
     sdf_dist_thresh: 0.01
     load_offline_dpts: false
     valid_rs_serials:
-      - "105322251564"
-      - "043422252387"
-      - "037522251142"
-      - "105322251225"
-      - "108222250342"
-      - "117222250549"
-      - "046122250168"
-      - "115422250549"
+      - "246322300746"
+      - "338522300613"
+      - "338522302174"
+      - "341222301246"
+      - "342622301386"
+      - "342622302051"
     valid_mano_joint_indices:
       - 0
       - 1

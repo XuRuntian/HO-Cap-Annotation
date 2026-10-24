@@ -65,6 +65,7 @@ class HOCapRenderer:
         mano_colors=None,
         mano_joints=None,
         pv_poses=None,
+        mano_validity=None,
     ):
         self.render_dict["object_poses"] = object_poses
         self.render_dict["mano_verts"] = mano_verts
@@ -72,6 +73,7 @@ class HOCapRenderer:
         self.render_dict["mano_colors"] = mano_colors
         self.render_dict["mano_joints"] = mano_joints
         self.render_dict["pv_poses"] = pv_poses
+        self.render_dict["mano_validity"] = mano_validity
         self._render_fn = (
             draw_image_grid if pv_poses is None else draw_all_camera_images
         )
@@ -99,19 +101,34 @@ class HOCapRenderer:
             raise FileNotFoundError(msg)
         return poses_o
 
+    def _get_mano_geometry(self, frame_id):
+        vertices = self.render_dict["mano_verts"]
+        faces = self.render_dict["mano_faces"]
+        colors = self.render_dict["mano_colors"]
+        if vertices is None:
+            return None, faces, colors
+        vertices = vertices[frame_id]
+        validity = self.render_dict.get("mano_validity")
+        if validity is None:
+            return vertices, faces, colors
+        valid = np.asarray(validity[frame_id], dtype=bool)
+        if valid.shape != (len(colors),) or len(vertices) != len(valid) * NUM_MANO_VERTS:
+            raise ValueError("MANO validity does not match hand geometry")
+        if not valid.any():
+            return None, None, []
+        vertex_mask = np.repeat(valid, NUM_MANO_VERTS)
+        faces = faces[vertex_mask[faces].all(axis=-1)]
+        remap = np.full(len(vertices), -1, dtype=int)
+        remap[vertex_mask] = np.arange(vertex_mask.sum())
+        return vertices[vertex_mask], remap[faces], [color for color, keep in zip(colors, valid) if keep]
+
     def get_rendered_colors_by_frame_id(self, frame_id, return_vis=True):
         poses_o = (
             self.render_dict["object_poses"][frame_id]
             if self.render_dict["object_poses"] is not None
             else None
         )
-        verts_m = (
-            self.render_dict["mano_verts"][frame_id]
-            if self.render_dict["mano_verts"] is not None
-            else None
-        )
-        faces_m = self.render_dict["mano_faces"]
-        colors_m = self.render_dict["mano_colors"]
+        verts_m, faces_m, colors_m = self._get_mano_geometry(frame_id)
         r_colors = self._renderer.get_render_colors(
             width=self._rs_width,
             height=self._rs_height,
@@ -161,13 +178,7 @@ class HOCapRenderer:
             if self.render_dict["object_poses"] is not None
             else None
         )
-        verts_m = (
-            self.render_dict["mano_verts"][frame_id]
-            if self.render_dict["mano_verts"] is not None
-            else None
-        )
-        faces_m = self.render_dict["mano_faces"]
-        colors_m = self.render_dict["mano_colors"]
+        verts_m, faces_m, colors_m = self._get_mano_geometry(frame_id)
         r_depths = self._renderer.get_render_depths(
             width=self._rs_width,
             height=self._rs_height,
@@ -221,13 +232,7 @@ class HOCapRenderer:
             if self.render_dict["object_poses"] is not None
             else None
         )
-        verts_m = (
-            self.render_dict["mano_verts"][frame_id]
-            if self.render_dict["mano_verts"] is not None
-            else None
-        )
-        faces_m = self.render_dict["mano_faces"]
-        colors_m = self.render_dict["mano_colors"]
+        verts_m, faces_m, colors_m = self._get_mano_geometry(frame_id)
         r_segs = self._renderer.get_render_segs(
             width=self._rs_width,
             height=self._rs_height,

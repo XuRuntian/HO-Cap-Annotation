@@ -14,14 +14,20 @@ from hocap_annotation.loss import (
 )
 from hocap_annotation.loaders import SequenceLoader
 from hocap_annotation.rendering import HOCapRenderer
+from hocap_annotation.utils.hand_observations import prepare_hand_initialization
 
 
 class ManoPoseSolver:
-    def __init__(self, sequence_folder, debug=False) -> None:
+    def __init__(self, sequence_folder, debug=False, output_folder=None) -> None:
         self._data_folder = Path(sequence_folder)
         self._debug = debug
         self._device = CFG.device
-        self._save_folder = self._data_folder / "processed/hand_pose_solver"
+        self._save_folder = (
+            Path(output_folder) if output_folder is not None
+            else self._data_folder / "processed/hand_pose_solver"
+        )
+        if output_folder is not None and self._save_folder.exists():
+            raise FileExistsError(f"Refusing to overwrite {self._save_folder}")
         self._save_folder.mkdir(parents=True, exist_ok=True)
 
         self._log_file = self._save_folder / "mano_pose_solver.log"
@@ -65,6 +71,7 @@ class ManoPoseSolver:
         self._load_offline_dpts = optim_config["load_offline_dpts"]
         self._valid_rs_serials = optim_config["valid_rs_serials"]
         self._valid_mano_joint_indices = optim_config["valid_mano_joint_indices"]
+        self._max_init_gap = optim_config.get("max_init_gap_frames", 5)
         self._logger.debug(
             "Optimization Config:\n" + pformat(optim_config, sort_dicts=False)
         )
@@ -138,7 +145,6 @@ class ManoPoseSolver:
 
     def _load_hand_3d_joints(self, file_path):
         joints = np.load(file_path).astype(np.float32)  # (H, N, 21, 3)
-        joints[:, 1] = joints[:, 0]
         joints = np.stack(
             [joints[0 if side == "right" else 1] for side in self._mano_sides], axis=0
         )  # (num_hands, num_frames, 21, 3)
@@ -183,7 +189,9 @@ class ManoPoseSolver:
         # Project points using camera matrices
         p_2d_hom = torch.einsum("cij, nckj->ncki", Ms, p_3d_hom)  # Shape: (N, C, P, 3)
         # Normalize the points to convert to 2D coordinates
-        p_2d = p_2d_hom[..., :2] / p_2d_hom[..., 2:3]  # Shape: (N, C, P, 2)
+        z = p_2d_hom[..., 2:3]
+        z = torch.where(z.abs() < 1e-6, torch.full_like(z, 1e-6), z)
+        p_2d = p_2d_hom[..., :2] / z
         return p_2d
 
     def _get_dpts_for_loss_sdf(self, verts, faces, dpts, dist_thresh):
@@ -192,7 +200,7 @@ class ManoPoseSolver:
 
     def _loss_sdf(self, verts_list, faces, dpts_list):
         def loss_sdf(verts, faces, dpts):
-            if dpts.size(0) < 2000:
+            if dpts.size(0) < 2000 or not len(faces):
                 return self._zero
             loss, _, _ = self._meshsdf_loss(verts, faces, dpts)
             loss *= 1e3  # scale to meters
@@ -206,7 +214,7 @@ class ManoPoseSolver:
         losses = [None] * len(verts_list)
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = {
-                executor.submit(loss_sdf, verts, faces, dpts): i
+                executor.submit(loss_sdf, verts, self._faces_for_frame(faces, i), dpts): i
                 for i, (verts, dpts) in enumerate(zip(verts_list, dpts_list))
             }
             for future in concurrent.futures.as_completed(futures):
@@ -222,13 +230,33 @@ class ManoPoseSolver:
         pose_m = np.zeros(
             (self._mano_group_layer.num_obj, self._num_frames, 51), dtype=np.float32
         )
-        # Update the global translations
-        pose_m[:, :, -3:] = joints_3d[:, :, 0].copy()
+        if self._w_kpt_2d > 0:
+            views = self._valid_mask_m.reshape(self._num_frames, -1, len(self._mano_sides), 21)
+            views = views.any(dim=-1).sum(dim=1).T.cpu().numpy()
+        else:
+            views = np.zeros(joints_3d.shape[:2], dtype=int)
+        roots, valid, observed, source = prepare_hand_initialization(
+            joints_3d, views, max_gap=self._max_init_gap
+        )
+        self._fit_valid = torch.from_numpy(valid).to(self._device)
+        self._observed_3d = observed
+        self._init_source = source
+        pose_m[:, :, -3:] = roots
+        if self._w_kpt_2d > 0:
+            valid_points = self._fit_valid.T.repeat_interleave(21, dim=1)
+            self._valid_mask_m &= valid_points[:, None, :]
         pose_m = [
             torch.nn.Parameter(torch.from_numpy(p).to(self._device), requires_grad=True)
             for p in pose_m
         ]
         return pose_m
+
+    def _faces_for_frame(self, faces, frame_id, subset=None):
+        valid = self._fit_valid[:, frame_id]
+        if subset is not None:
+            valid = valid[subset]
+        vertices_valid = valid.repeat_interleave(NUM_MANO_VERTS)
+        return faces[vertices_valid[faces].all(dim=-1)].contiguous()
 
     def _prepare_dpts_list_for_loss_sdf(self, subset):
         self._logger.info(f"Preparing dpts for SDF loss...")
@@ -256,10 +284,14 @@ class ManoPoseSolver:
             faces, _ = self._mano_group_layer.get_f_from_inds(subset)
             verts, _ = self._mano_group_layer_forward(self._pose_m, subset)
             for f_idx in tqdm(range(self._num_frames), ncols=100):
+                frame_faces = self._faces_for_frame(faces, f_idx, subset)
+                if not len(frame_faces):
+                    dpts_list[f_idx] = torch.zeros((0, 3), dtype=torch.float32, device=self._device)
+                    continue
                 self._data_loader.step_by_frame_id(f_idx)
                 points = self._data_loader.points[self._data_loader.masks]
                 points = self._get_dpts_for_loss_sdf(
-                    verts[f_idx], faces, points, self._dist_thresh
+                    verts[f_idx], frame_faces, points, self._dist_thresh
                 )
                 points = process_points(
                     points=points, voxel_size=0.003, remove_outliers=True
@@ -315,14 +347,26 @@ class ManoPoseSolver:
             [p.detach().cpu() for p in self._pose_m], dim=0
         ).clone()
         optim_pose_m = optim_pose_m.numpy().astype(np.float32)
+        valid = self._fit_valid.detach().cpu().numpy()
+        optim_pose_m[~valid] = -1
         if len(self._mano_sides) == 1:
             filler_pose_m = np.full_like(optim_pose_m, -1)
             if "right" in self._mano_sides:
                 optim_pose_m = np.concatenate([optim_pose_m, filler_pose_m], axis=0)
+                valid = np.concatenate([valid, np.zeros_like(valid)], axis=0)
             elif "left" in self._mano_sides:
                 optim_pose_m = np.concatenate([filler_pose_m, optim_pose_m], axis=0)
+                valid = np.concatenate([np.zeros_like(valid), valid], axis=0)
         self._logger.debug(f"optim_pose_m: {optim_pose_m.shape}")
         np.save(self._save_folder / f"{save_name}.npy", optim_pose_m)
+        np.save(self._save_folder / f"{save_name}_valid.npy", valid)
+        np.savez_compressed(
+            self._save_folder / "fit_observations.npz",
+            hands=np.asarray(self._mano_sides),
+            observed_3d=self._observed_3d,
+            fit_valid=self._fit_valid.cpu().numpy(),
+            initialization_source=self._init_source,
+        )
 
     def initialize_optimizer(self):
         self._logger.info("Initializing optimizer...")
@@ -341,22 +385,25 @@ class ManoPoseSolver:
 
         joints_3d = self._load_hand_3d_joints(self._joints_3d_file)
 
+        if self._w_kpt_2d > 0:
+            self._target_kpts_m, self._valid_mask_m = self._load_hand_2d_keypoints(
+                self._joints_2d_file
+            )
+
         self._pose_m = self._initialize_pose_m_from_3d_joints(joints_3d)
         self._optimizer = torch.optim.Adam(self._pose_m, lr=self._lr)
 
         if self._w_kpt_3d > 0:
             joints_3d = np.concatenate([p for p in joints_3d], axis=1)
             self._target_joints_3d = torch.from_numpy(joints_3d).to(self._device)
+            observed = self._observed_3d & self._fit_valid.cpu().numpy()[..., None]
+            self._valid_3d_m = torch.from_numpy(
+                np.concatenate(list(observed), axis=1)
+            ).to(self._device)
             self._logger.info(f"target_joints_3d: {self._target_joints_3d.shape}")
 
         # loss, sdf, kpt_2d, kpt_3d, reg, smooth
         self._log_loss = np.zeros((6, self._total_steps), dtype=np.float32)
-
-        # Load 2d keypoints for hands
-        if self._w_kpt_2d > 0:
-            self._target_kpts_m, self._valid_mask_m = self._load_hand_2d_keypoints(
-                self._joints_2d_file
-            )
 
     def solve(self):
         subset_m = list(range(self._mano_group_layer.num_obj))
@@ -402,7 +449,8 @@ class ManoPoseSolver:
                 loss_kpt_3d = self._zero
             else:
                 loss_kpt_3d = self._loss_kpt_3d_m(
-                    joints_m, self._target_joints_3d, self._valid_kpt_ind_m
+                    joints_m, self._target_joints_3d, self._valid_kpt_ind_m,
+                    valid_mask=self._valid_3d_m,
                 )
                 loss_kpt_3d *= self._w_kpt_3d
 
@@ -423,7 +471,7 @@ class ManoPoseSolver:
             if self._w_smooth == 0:
                 loss_smooth = self._zero
             elif step >= self._total_steps - self._smooth_steps:
-                loss_smooth = self._loss_smooth(self._pose_m, subset_m)
+                loss_smooth = self._loss_smooth(self._pose_m, subset_m, valid_mask=self._fit_valid)
                 loss_smooth *= self._w_smooth
             else:
                 loss_smooth = self._zero
@@ -491,7 +539,9 @@ class ManoPoseSolver:
 
         # Prepare hand data
         poses_m = self._load_poses_m(self._save_folder / f"{poses_m_name}.npy")
-        poses_m = [torch.from_numpy(p).to(self._device) for p in poses_m]
+        render_valid = np.isfinite(poses_m).all(axis=-1) & ~np.all(poses_m == -1, axis=-1)
+        safe_poses = np.where(render_valid[..., None], poses_m, 0)
+        poses_m = [torch.from_numpy(p).to(self._device) for p in safe_poses]
         verts_m, joints_m = self._mano_group_layer_forward(poses_m)
         verts_m = verts_m.detach().clone().cpu().numpy()
         joints_m = joints_m.detach().clone().cpu().numpy()
@@ -504,7 +554,10 @@ class ManoPoseSolver:
 
         # Render poses
         renderer = HOCapRenderer(self._data_folder, log_file=self._log_file)
-        renderer.update_render_dict(poses_o, verts_m, faces_m, colors_m, joints_m)
+        renderer.update_render_dict(
+            poses_o, verts_m, faces_m, colors_m, joints_m,
+            mano_validity=render_valid.T,
+        )
         renderer.render_pose_images(
             save_folder=self._save_folder / f"vis",
             save_video_path=self._save_folder / f"{video_name}.mp4",
@@ -545,10 +598,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--debug", action="store_true", help="Whether to enable debug mode"
     )
+    parser.add_argument("--output_folder", help="New result directory; refuses to overwrite an existing directory")
     args = parser.parse_args()
 
     if args.sequence_folder is None:
         raise ValueError("Please provide the sequence folder!")
 
-    solver = ManoPoseSolver(args.sequence_folder, args.debug)
+    solver = ManoPoseSolver(args.sequence_folder, args.debug, args.output_folder)
     solver.run()

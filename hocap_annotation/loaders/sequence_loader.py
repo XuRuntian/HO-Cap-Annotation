@@ -38,8 +38,16 @@ class SequenceLoader:
         self._in_world = in_world
         self._device = device
 
-        # Crop limits in world frame, [x_min, x_max, y_min, y_max, z_min, z_max]
-        self._crop_lim = [-0.60, +0.60, -0.35, +0.35, -0.01, +0.80]
+        # Optional world-frame crop; preserve the legacy default for old configs.
+        self._crop_lim = CFG.get("pointcloud", {}).get(
+            "crop_limits", [-0.60, +0.60, -0.35, +0.35, -0.01, +0.80]
+        )
+        if self._crop_lim is not None:
+            limits = np.asarray(self._crop_lim, dtype=float)
+            if (limits.shape != (6,) or not np.isfinite(limits).all()
+                    or np.any(limits[::2] >= limits[1::2])):
+                raise ValueError("pointcloud.crop_limits must be null or six finite ordered bounds")
+            self._crop_lim = limits.tolist()
 
         # Load metadata
         self._load_metadata()
@@ -257,14 +265,12 @@ class SequenceLoader:
             0, 2, 1
         )  # (N, H*W, 3)
 
-        # Crop 3D points
-        mx1 = pts[..., 0] > self._crop_lim[0]
-        mx2 = pts[..., 0] < self._crop_lim[1]
-        my1 = pts[..., 1] > self._crop_lim[2]
-        my2 = pts[..., 1] < self._crop_lim[3]
-        mz1 = pts[..., 2] > self._crop_lim[4]
-        mz2 = pts[..., 2] < self._crop_lim[5]
-        masks = mx1 & mx2 & my1 & my2 & mz1 & mz2
+        # Zero/invalid depth is never a valid point, even when cropping is disabled.
+        masks = (depths[:, 0] > 0) & torch.isfinite(depths[:, 0]) & torch.isfinite(pts).all(dim=-1)
+        if self._crop_lim is not None:
+            for axis in range(3):
+                masks &= (pts[..., axis] > self._crop_lim[2 * axis])
+                masks &= (pts[..., axis] < self._crop_lim[2 * axis + 1])
 
         # Transform 3D points from world frame to master frame if necessary
         if not self._in_world:

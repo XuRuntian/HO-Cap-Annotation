@@ -104,12 +104,14 @@ class HandJointsDetector:
         self._logger.info(">>>>>>>>>> Running MediaPipe Hand Detection <<<<<<<<<<")
 
         mp_config = CFG.mp_hand
-        mp_config.device = CFG.device
         mp_config["max_num_hands"] = len(self._mano_sides)
         mp_handmarks = {serial: None for serial in self._rs_serials}
 
         tqbar = tqdm(total=self._num_cameras, ncols=100)
-        with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=CFG.max_workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
             futures = {
                 executor.submit(
                     run_mp_hand_detector,
@@ -199,7 +201,7 @@ class HandJointsDetector:
         ]
         create_video_from_image_files(save_video_path, vis_image_files, fps=30)
 
-    def run(self):
+    def run(self, skip_vis=False):
         self._logger.info("=" * 100)
         self._logger.info(
             f"Starting Hand Landmarks Detection for {self._data_folder.name}"
@@ -208,8 +210,9 @@ class HandJointsDetector:
 
         t_start = time.time()
 
-        # self.detect_mp_handmarks()
-        self.render_mp_handmarks()
+        self.detect_mp_handmarks()
+        if not skip_vis:
+            self.render_mp_handmarks()
 
         self._logger.info(f"Done!!! ({time.time() - t_start:.2f} s)")
 
@@ -219,10 +222,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sequence_folder", type=str, default=None, help="Path to the sequence folder."
     )
+    parser.add_argument("--skip-vis", action="store_true", help="Skip visualization rendering")
     args = parser.parse_args()
 
     if args.sequence_folder is None:
         raise ValueError("Please provide the sequence folder path.")
 
     detector = HandJointsDetector(args.sequence_folder)
-    detector.run()
+    detector.run(skip_vis=args.skip_vis)

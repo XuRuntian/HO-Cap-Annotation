@@ -20,7 +20,7 @@ class Keypoint3DLoss(nn.Module):
     def _l2_norm_loss(self, X, Y):
         return torch.linalg.vector_norm(X - Y, ord=2, dim=-1).sum()
 
-    def forward(self, pred_kpts_3d, gt_kpts_3d, valid_indices=None):
+    def forward(self, pred_kpts_3d, gt_kpts_3d, valid_indices=None, valid_mask=None):
         """
         Args:
             pred_kpts_3d: (B, N, 3), predicted 3D keypoints
@@ -34,8 +34,14 @@ class Keypoint3DLoss(nn.Module):
         )
         Y = gt_kpts_3d[:, valid_indices, :] if valid_indices is not None else gt_kpts_3d
 
-        X = X.view(-1, 3)
-        Y = Y.view(-1, 3)
+        mask = torch.isfinite(Y).all(dim=-1) & ~(Y == -1).all(dim=-1)
+        if valid_mask is not None:
+            selected = valid_mask[:, valid_indices] if valid_indices is not None else valid_mask
+            mask &= selected
+        X = X[mask].reshape(-1, 3)
+        Y = Y[mask].reshape(-1, 3)
+        if X.size(0) == 0:
+            return pred_kpts_3d.reshape(-1)[:0].sum()
 
         loss = self._loss_fn(X, Y) / X.size(0)
         return loss
