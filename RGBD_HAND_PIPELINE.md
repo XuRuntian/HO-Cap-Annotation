@@ -4,6 +4,24 @@
 
 输入是采集工具产生的 `rgbd/frames.jsonl`、`cam*/calibration.json`、`calibration/extrinsics.json` 和 RGB 图像。要求六台相机、米制外参，且外参明确声明 `p_master = T_master_from_camera @ p_camera (homogeneous column vectors)`。不猜测其他格式的外参方向。不读取深度，也不重新同步。
 
+## 一键运行（本机）
+
+```bash
+cd /home/xrt/HO-Cap-Annotation
+bash scripts/run_rgb_hand_pipeline.sh /home/xrt/Downloads/3D_Trajectory_Continuity_01
+```
+
+默认 CPU、平均手型，依次执行全部五个阶段，输出直接位于数据根目录的 `hand_annotations/predictions/`。脚本自动分别调用 `.venv-detect` 与相邻 `3DHandsForAll/.venv`，无需手动切换环境。不会自动安装依赖或下载模型。
+
+先做短测试：
+
+```bash
+bash scripts/run_rgb_hand_pipeline.sh /home/xrt/Downloads/3D_Trajectory_Continuity_01 \
+  --limit 3 --workdir /tmp/my-hand-test
+```
+
+参数沿用 Python 入口，如 `--device cuda`、`--betas shape.json`、`--replace`。换机器可通过 `MANO_PYTHON`、`DETECT_PYTHON`、`MANO_ROOT`、`HAND_MODEL` 环境变量指定路径；两个 Python 也可以指向同一个兼容环境。失败立即停止，单阶段续跑仍使用下文的 Python 命令。
+
 ## 文件职责
 
 默认工作目录是 `DATA_ROOT/hand_annotations`，也可用 `--workdir` 指定独立开发目录。
