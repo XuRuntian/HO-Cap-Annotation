@@ -7,20 +7,36 @@
 ## 一键运行（本机）
 
 ```bash
-cd /home/xrt/HO-Cap-Annotation
-bash scripts/run_rgb_hand_pipeline.sh /home/xrt/Downloads/3D_Trajectory_Continuity_01
+cd ~/HO-Cap-Annotation
+bash scripts/run_rgb_hand_pipeline.sh ~/ego_datas/3D_Trajectory_Continuity_01
 ```
 
-默认 CPU、平均手型，依次执行全部五个阶段，输出直接位于数据根目录的 `hand_annotations/predictions/`。脚本自动分别调用 `.venv-detect` 与相邻 `3DHandsForAll/.venv`，无需手动切换环境。不会自动安装依赖或下载模型。
+默认 CUDA、平均手型，MediaPipe 检测仍使用 CPU，依次执行全部五个阶段，输出直接位于数据根目录的 `hand_annotations/predictions/`。检测和拟合都默认调用 `$HOME/miniconda3/envs/hocap-annotation/bin/python`，MANO 默认位于 `$HOME/models/mano`，无需手动激活环境或设置环境变量。不会自动安装依赖或下载模型。
 
 先做短测试：
 
 ```bash
-bash scripts/run_rgb_hand_pipeline.sh /home/xrt/Downloads/3D_Trajectory_Continuity_01 \
+bash scripts/run_rgb_hand_pipeline.sh ~/ego_datas/3D_Trajectory_Continuity_01 \
   --limit 3 --workdir /tmp/my-hand-test
 ```
 
-参数沿用 Python 入口，如 `--device cuda`、`--betas shape.json`、`--replace`。换机器可通过 `MANO_PYTHON`、`DETECT_PYTHON`、`MANO_ROOT`、`HAND_MODEL` 环境变量指定路径；两个 Python 也可以指向同一个兼容环境。失败立即停止，单阶段续跑仍使用下文的 Python 命令。
+参数沿用 Python 入口，如 `--device cpu`、`--betas shape.json`、`--replace`。换机器可通过 `MANO_PYTHON`、`DETECT_PYTHON`、`MANO_ROOT`、`HAND_MODEL` 环境变量指定路径；未设置 `DETECT_PYTHON` 时跟随 `MANO_PYTHON`。失败立即停止。
+
+本机单阶段续跑示例（不要重新执行已有的 prepare）：
+
+```bash
+~/miniconda3/envs/hocap-annotation/bin/python tools/rgbd_hand_pipeline.py \
+  ~/ego_datas/3D_Trajectory_Continuity_01 --stage fit --device cuda \
+  --mano-root ~/models/mano --mean-hand
+```
+
+若之前指定了 `--workdir`，续跑时必须传入相同目录。
+
+当前机器验证（2026-11-07）：启动器3项测试通过；使用默认本机路径完成
+前3帧的 prepare/detect/triangulate/fit/export，三角化与拟合使用 CUDA。
+短测只执行5步三角化优化、10步拟合，结果在
+`/tmp/hocap-local-launcher-20261107`；质量门限下有效手实例为0，
+仅证明环境和启动链路可运行，不代表拟合收敛。完整序列尚未运行。
 
 ## 文件职责
 
@@ -56,7 +72,10 @@ DATA_ROOT/
 - `mano.npz`：`frame_ids [T]`、`betas [2,10]`、`hand_pose [T,2,45]`、`global_orient [T,2,3]`、`transl [T,2,3]`、`valid [T,2]`。绝对轴角、弧度、MANO v1.2 原生左右手、平手均值约定、米制主相机坐标，translation 为原生 MANO 原点平移（不是直接把腕点当平移）。PCA+均值在导出时转换为45维绝对轴角。无效条目不应渲染成有效预测。
 - 输入哈希阻止混用旧中间结果。重算用 `--replace`，下游需顺序重算；已有 `final/` 时禁止替换 `inputs/`，请另建工作目录。不会自动更新或覆盖人工结果。
 
-## 本机已验证的环境与命令
+## 历史 CPU 机器的环境与命令
+
+本节保留原开发机 `/home/xrt` 的环境与验证记录，不是当前 `/home/user`
+机器的默认配置。当前机器使用上方一键命令，无需创建 `.venv-detect`。
 
 检测与拟合可在不同环境/机器分阶段执行；移机复制完整工作目录，保持 manifest 和图像内容不变。本机现有 MANO 环境是 NumPy 1.23.5 / Torch 2.5.1 CPU / manopth；为避免 MediaPipe 新依赖升级其 NumPy，检测使用独立环境：
 
@@ -98,7 +117,7 @@ cd /home/xrt/3DHandsForAll
   --mano-root /home/xrt/models/mano_v1_2/models --device cpu
 ```
 
-## 验证
+## 历史验证
 
 ```bash
 cd /home/xrt/HO-Cap-Annotation

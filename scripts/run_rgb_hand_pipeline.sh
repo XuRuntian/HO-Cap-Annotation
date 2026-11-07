@@ -8,11 +8,12 @@ if [[ $# -eq 0 || ${1:-} == --help || ${1:-} == -h ]]; then
 用法：bash scripts/run_rgb_hand_pipeline.sh 数据根目录 [选项]
 
 自动执行：去畸变 → 2D检测 → 三角化 → MANO拟合 → 统一导出。
-默认使用 CPU、平均手型，输出到 数据根目录/hand_annotations。
+默认使用 CUDA、平均手型；MediaPipe 检测使用 CPU。
+输出到 数据根目录/hand_annotations。
 
 常用选项（直接传给已有 Python 入口）：
   --limit 3 --workdir /tmp/hand-test   先测试前三帧
-  --device cuda                      在 GPU 机器上拟合
+  --device cpu                       改用 CPU 三角化和拟合
   --betas shape.json                  使用指定手型，替代平均手型
   --mano-root /path/to/models         指定 MANO 资产
   --hand-model /path/to/model.task    指定 MediaPipe 模型
@@ -33,9 +34,9 @@ for arg in "$@"; do
         --betas|--betas=*|--mean-hand) SHAPE_ARGS=() ;;
     esac
 done
-MANO_PYTHON=${MANO_PYTHON:-"$REPO_ROOT/../3DHandsForAll/.venv/bin/python"}
-DETECT_PYTHON=${DETECT_PYTHON:-"$REPO_ROOT/.venv-detect/bin/python"}
-MANO_ROOT=${MANO_ROOT:-"$HOME/models/mano_v1_2/models"}
+MANO_PYTHON=${MANO_PYTHON:-"$HOME/miniconda3/envs/hocap-annotation/bin/python"}
+DETECT_PYTHON=${DETECT_PYTHON:-"$MANO_PYTHON"}
+MANO_ROOT=${MANO_ROOT:-"$HOME/models/mano"}
 HAND_MODEL=${HAND_MODEL:-"$REPO_ROOT/config/checkpoints/mediapipe/hand_landmarker.task"}
 for interpreter in "$MANO_PYTHON" "$DETECT_PYTHON"; do
     if ! command -v "$interpreter" >/dev/null 2>&1; then
@@ -43,12 +44,12 @@ for interpreter in "$MANO_PYTHON" "$DETECT_PYTHON"; do
         exit 2
     fi
 done
-printf '数据：%s\n默认使用 CPU 和平均手型；可通过参数覆盖。\n' "$DATA_ROOT"
+printf '数据：%s\n默认使用 CUDA 和平均手型；可通过参数覆盖。\n' "$DATA_ROOT"
 for stage in prepare detect triangulate fit export; do
     interpreter=$MANO_PYTHON
     if [[ $stage == detect ]]; then interpreter=$DETECT_PYTHON; fi
     "$interpreter" "$REPO_ROOT/tools/rgbd_hand_pipeline.py" "$DATA_ROOT" \
-        --stage "$stage" --device cpu --mano-root "$MANO_ROOT" \
+        --stage "$stage" --device cuda --mano-root "$MANO_ROOT" \
         --hand-model "$HAND_MODEL" "${SHAPE_ARGS[@]}" "$@"
 done
 printf '流程完成。默认结果：%s/hand_annotations/predictions/mano.npz\n若指定 --workdir，结果位于该目录的 predictions/。\n' "$DATA_ROOT"
