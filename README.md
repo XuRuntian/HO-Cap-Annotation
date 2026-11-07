@@ -176,3 +176,7 @@ python tools/08_holo_pose_solver.py --sequence_folder <path_to_sequence_folder>
 ```
 
 ![holo_pose_refinement](./docs/resources/08_holo_pose_refine.png)
+
+## Synchronized six-camera RGB hand pipeline
+
+See [RGBD_HAND_PIPELINE.md](RGBD_HAND_PIPELINE.md) for the independent RGB-only entry point, flat predictions output, and the MANO annotation contract.

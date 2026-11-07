@@ -1,4 +1,3 @@
-from .mesh_sdf_loss import MeshSDFLoss
 from .keypoint_2d_loss import Keypoint2DLoss
 from .keypoint_3d_loss import Keypoint3DLoss
 from .mano_reg_loss import MANORegLoss
@@ -13,3 +12,11 @@ __all__ = [
     "PoseAlignmentLoss",
     "PoseSmoothnessLoss",
 ]
+
+
+def __getattr__(name):
+    # RGB-only callers must not load the optional meshsdf CUDA extension.
+    if name == "MeshSDFLoss":
+        from .mesh_sdf_loss import MeshSDFLoss
+        return MeshSDFLoss
+    raise AttributeError(name)

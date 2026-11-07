@@ -146,3 +146,7 @@ cython_debug/
 
 # Mac system files
 .DS_Store
+
+# Local RGB hand pipeline environments and downloaded assets
+.venv-*/
+config/checkpoints/

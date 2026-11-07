@@ -1,4 +1,8 @@
-from hocap_annotation.utils import *
+import math
+from pathlib import Path
+import numpy as np
+
+PROJ_ROOT = Path(__file__).resolve().parents[2]
 import mediapipe as mp
 
 
@@ -55,8 +59,8 @@ class MPHandDetector:
         """
 
         def normalized_to_pixel_coords(normalized_x, normalized_y):
-            pixel_x = min(np.floor(normalized_x * W), W - 1)
-            pixel_y = min(np.floor(normalized_y * H), H - 1)
+            pixel_x = min(max(normalized_x * W, 0), W - 1)
+            pixel_y = min(max(normalized_y * H, 0), H - 1)
             return pixel_x, pixel_y
 
         hand_marks = []
@@ -84,7 +88,7 @@ class MPHandDetector:
                             normalized_to_pixel_coords(lmk.x, lmk.y)
                             for lmk in hand_landmarks
                         ],
-                        dtype=np.int64,
+                        dtype=np.float32,
                     )
                     side = handedness_list[idx][0].category_name.lower()
                     score = handedness_list[idx][0].score
@@ -92,6 +96,9 @@ class MPHandDetector:
                     hand_sides.append(side)
                     hand_scores.append(score)
         except Exception as e:
-            print(f"Error in detect_one: {e}")
+            raise RuntimeError("MediaPipe hand detection failed") from e
 
         return hand_marks, hand_sides, hand_scores
+
+    def close(self):
+        self._detector.close()
