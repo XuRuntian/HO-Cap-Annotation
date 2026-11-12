@@ -72,6 +72,16 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 7)
         self.assertEqual(len(calls), 2)
 
+    def test_hand_shape_directory(self):
+        for args in [("--hand-shape", "/shape with spaces"),
+                     ("--hand-shape=/shape with spaces",)]:
+            with self.subTest(args=args):
+                result, calls = self.launch(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for call in calls[-5:]:
+                    self.assertNotIn("--mean-hand", call)
+                    self.assertEqual(call[-len(args):], list(args))
+
 
 if __name__ == "__main__":
     unittest.main()

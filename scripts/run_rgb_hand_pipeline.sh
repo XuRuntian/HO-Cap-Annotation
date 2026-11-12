@@ -15,6 +15,7 @@ if [[ $# -eq 0 || ${1:-} == --help || ${1:-} == -h ]]; then
   --limit 3 --workdir /tmp/hand-test   先测试前三帧
   --device cpu                       改用 CPU 三角化和拟合
   --betas shape.json                  使用指定手型，替代平均手型
+  --hand-shape /path/to/shape         读取目录内的 betas.json 并校验元数据
   --mano-root /path/to/models         指定 MANO 资产
   --hand-model /path/to/model.task    指定 MediaPipe 模型
   --replace                          重算已有结果，不覆盖 final/
@@ -31,7 +32,7 @@ SHAPE_ARGS=(--mean-hand)
 for arg in "$@"; do
     case "$arg" in
         --stage|--stage=*) echo '一键脚本执行全部阶段；单阶段请使用 Python 入口。' >&2; exit 2 ;;
-        --betas|--betas=*|--mean-hand) SHAPE_ARGS=() ;;
+        --betas|--betas=*|--hand-shape|--hand-shape=*|--mean-hand) SHAPE_ARGS=() ;;
     esac
 done
 MANO_PYTHON=${MANO_PYTHON:-"$HOME/miniconda3/envs/hocap-annotation/bin/python"}

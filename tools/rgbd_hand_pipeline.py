@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hocap_annotation.rgbd_data import prepare, PreparedSequence
+from hocap_annotation.hand_shape import load_hand_shape
 
 
 def main():
@@ -59,6 +60,10 @@ def main():
     shape.add_argument(
         "--betas", type=Path, help="JSON [2,10] shared shape: right,left"
     )
+    shape.add_argument(
+        "--hand-shape", type=Path,
+        help="Fixed shape directory containing betas.json and metadata.json",
+    )
     p.add_argument(
         "--replace",
         action="store_true",
@@ -71,8 +76,16 @@ def main():
     if a.stage in ("all", "fit"):
         if not a.mano_root:
             p.error("--mano-root is required for fitting")
-        if not a.mean_hand and not a.betas:
-            p.error("Choose --mean-hand or --betas explicitly")
+        if not a.mean_hand and not a.betas and not a.hand_shape:
+            p.error("Choose --mean-hand, --betas or --hand-shape explicitly")
+    betas = None
+    if a.hand_shape:
+        try:
+            betas = load_hand_shape(a.hand_shape, a.mano_root)
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            p.error(f"Invalid --hand-shape: {exc}")
+    elif a.betas and a.stage in ("all", "fit"):
+        betas = json.loads(a.betas.read_text())
     if a.cpu_threads < 1:
         p.error("--cpu-threads must be positive")
     stages = (
@@ -112,7 +125,7 @@ def main():
                 a.device,
                 a.fit_steps,
                 a.lr,
-                json.loads(a.betas.read_text()) if a.betas else None,
+                betas,
                 replace=a.replace,
             )
         else:

@@ -72,6 +72,94 @@ DATA_ROOT/
 - `mano.npz`：`frame_ids [T]`、`betas [2,10]`、`hand_pose [T,2,45]`、`global_orient [T,2,3]`、`transl [T,2,3]`、`valid [T,2]`。绝对轴角、弧度、MANO v1.2 原生左右手、平手均值约定、米制主相机坐标，translation 为原生 MANO 原点平移（不是直接把腕点当平移）。PCA+均值在导出时转换为45维绝对轴角。无效条目不应渲染成有效预测。
 - 输入哈希阻止混用旧中间结果。重算用 `--replace`，下游需顺序重算；已有 `final/` 时禁止替换 `inputs/`，请另建工作目录。不会自动更新或覆盖人工结果。
 
+## 导入 EasyMocap 固定手形
+
+EasyMocap 离线估计手形，本仓库只接收 betas，不导入它的姿态或平移。
+目前适配的是 `scripts/test_mano_sequence.py` 使用的
+`easymocap.smplmodel.load_model` 加载路径，不是任意 EasyMocap 模型配置。
+
+先在 EasyMocap 仓库运行（输入需要已有本链路的检测、三角化和 predictions 元数据）：
+
+```bash
+cd ~/EasyMocap
+env -u LD_LIBRARY_PATH OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  ~/miniconda3/envs/easymocap/bin/python scripts/test_mano_sequence.py \
+  /home/user/test_ego_anno/3D_Trajectory_Continuity_01 \
+  --out output/shape_rerun_20261112
+```
+
+转换时使用 hocap 环境，并校验两边实际加载的 MANO 模板和形状基底。
+输出目录必须不存在；重复试验请换目录，不覆盖已经使用的手形：
+
+```bash
+cd ~/HO-Cap-Annotation
+conda activate hocap-annotation
+python tools/import_hand_shape.py \
+  ~/EasyMocap/output/shape_rerun_20261112/trial_shape.npz \
+  --output ~/hand_shapes/3D_Trajectory_Continuity_01_20261112 \
+  --easymocap-root ~/EasyMocap \
+  --easymocap-python ~/miniconda3/envs/easymocap/bin/python \
+  --mano-root ~/models/mano
+```
+
+输入 NPZ 必须包含 `betas [2,10]` 和 `hand_order [2]`，左右手各一次。
+工具规范化顺序为右、左，拒绝非有限数值、错误维度和不兼容基底。
+输出 `betas.json` 是纯数值数组，可直接传给现有 `--betas`；
+`metadata.json` 记录来源哈希、模型哈希、兼容性检查和试验状态。
+请将这两个文件一起保留，之后同一个人的新数据不需要安装或运行 EasyMocap：
+
+```bash
+bash scripts/run_rgb_hand_pipeline.sh /path/to/new_dataset \
+  --hand-shape ~/hand_shapes/3D_Trajectory_Continuity_01_20261112
+```
+
+推荐使用 `--hand-shape 目录`：自动读取 `betas.json` 和 `metadata.json`，
+在执行阶段前检查格式、左右手顺序、betas 哈希，并在指定 MANO 目录时
+校验模型哈希。一键脚本始终提供 MANO 目录，因此会执行模型校验。
+原 `--betas 文件` 仍兼容，但不做配套元数据校验；这两个选项与
+`--mean-hand` 互斥。Python 分阶段入口同样支持 `--hand-shape`。
+
+已有数据更换手形时，只需重新 fit 和 export，但不能直接替换旧
+`mano.npz` 中的 betas。推荐新建工作目录，复制原 `inputs/` 和
+`predictions/{observations_2d.npz,joints_3d.npz,run_config.json}`，
+然后运行（两条命令必须传同一个工作目录）：
+
+```bash
+DATA=/home/user/test_ego_anno/3D_Trajectory_Continuity_01
+WORK="$DATA/hand_annotations_shape_20261112"
+python tools/rgbd_hand_pipeline.py "$DATA" --workdir "$WORK" --stage fit \
+  --mano-root ~/models/mano --device cuda --fit-steps 10000 \
+  --betas ~/hand_shapes/3D_Trajectory_Continuity_01_20261112/betas.json
+python tools/rgbd_hand_pipeline.py "$DATA" --workdir "$WORK" --stage export
+```
+
+不要复制或覆盖人工 `final/`。固定手形只对同一个人复用；模型资产或
+加载方式改变后应重新验证兼容性。兼容性通过不代表手形估计准确，仍需
+检查 EasyMocap 的保留集骨长误差、拟合诊断和多视角叠加效果。
+
+### 2026-11-12 本机实测
+
+已重新运行 EasyMocap，完成上述转换和全259帧 CUDA 拟合（左右手各10000步），
+再导出到 `hand_annotations_shape_20261112/predictions/mano.npz`。
+该工作目录的 `shape/` 同时保留本次 `betas.json` 和来源元数据。
+原 `hand_annotations/` 和人工 `final/` 未覆盖。
+两边 MANO 模板、形状基底的最大绝对差均为0，导出 betas 已与输入核对。
+
+| 指标 | 平均手形：右 / 左 | EasyMocap 手形：右 / 左 |
+| --- | --- | --- |
+| 有效帧数 | 259 / 259 | 259 / 259 |
+| 每帧重投影中位误差的跨帧中位数 (px) | 5.18 / 5.23 | 6.34 / 5.59 |
+| 每帧3D关节平均误差的跨帧中位数 (mm) | 6.80 / 6.56 | 8.26 / 6.69 |
+
+这些是相对原2D观测和三角化关节的残差，不是真值精度。
+本次固定手形并未改善最终残差，故仅标记为试验手形，不升为默认配置；
+尚未进行GUI多视角视觉验收。后续应检查大幅度 betas、骨长观测质量及
+关节定义差异，或用专门的手形标定序列，而不是仅凭骨长拟合改善就验收。
+
+测试：转换工具4项、启动脚本3项通过；RGB流水线4项通过、1项因旧机器
+MANO路径跳过。该旧测试套件直接运行时存在 `patch.dict(sys.modules)`
+触发Torch重复导入的问题，预先 `import torch` 后通过；未改动该无关测试。
+
 ## 历史 CPU 机器的环境与命令
 
 本节保留原开发机 `/home/xrt` 的环境与验证记录，不是当前 `/home/user`
