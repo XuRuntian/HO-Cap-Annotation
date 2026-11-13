@@ -74,6 +74,32 @@ DATA_ROOT/
 
 ## 导入 EasyMocap 固定手形
 
+### 当前三步流程（无需手工转换）
+
+1. 在 EasyMocap 使用独立的 `scripts/calibrate_hand_shape.py` 生成个人手形。
+2. 将其输出目录直接传给本仓库的 `--hand-shape`。
+3. 使用 3DHandsForAll 打开动作数据进行人工修正。
+
+```bash
+cd ~/HO-Cap-Annotation
+bash scripts/run_rgb_hand_pipeline.sh /path/to/new_dataset \
+  --hand-shape ~/EasyMocap/output/person01_shape
+```
+
+该目录包含 `trial_shape.npz` 和 `report.json` 即可。加载器先检查报告成功
+状态及记录的 MANO 文件哈希，再自动调用转换工具校验实际形状基底，
+在临时目录转换并读取，退出后清理；不修改 EasyMocap 输出、不重新估计手形。
+默认使用 `~/EasyMocap` 和 `~/miniconda3/envs/easymocap/bin/python`，
+可分别用 `EASYMOCAP_ROOT`、`EASYMOCAP_PYTHON` 环境变量覆盖。
+自动适配需要本机 EasyMocap 环境；已有 `betas.json`/`metadata.json` 标准
+目录依然可直接读取，无需 EasyMocap。一个目录同时包含两种格式时会拒绝猜测。
+
+仅老版 `test_mano_sequence.py` 输出（无成功状态和模型哈希）仍使用下方
+手工导入方式；新独立标定入口不需要这个额外步骤。
+这里简化的是手形输入，不改变动作数据的目录要求。
+
+### 历史手工导入方式
+
 EasyMocap 离线估计手形，本仓库只接收 betas，不导入它的姿态或平移。
 目前适配的是 `scripts/test_mano_sequence.py` 使用的
 `easymocap.smplmodel.load_model` 加载路径，不是任意 EasyMocap 模型配置。

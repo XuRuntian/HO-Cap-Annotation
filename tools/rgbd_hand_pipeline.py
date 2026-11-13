@@ -62,7 +62,7 @@ def main():
     )
     shape.add_argument(
         "--hand-shape", type=Path,
-        help="Fixed shape directory containing betas.json and metadata.json",
+        help="EasyMocap output directory or fixed betas.json/metadata.json directory",
     )
     p.add_argument(
         "--replace",
