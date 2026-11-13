@@ -86,16 +86,14 @@ bash scripts/run_rgb_hand_pipeline.sh /path/to/new_dataset \
   --hand-shape ~/EasyMocap/output/person01_shape
 ```
 
-该目录包含 `trial_shape.npz` 和 `report.json` 即可。加载器先检查报告成功
-状态及记录的 MANO 文件哈希，再自动调用转换工具校验实际形状基底，
-在临时目录转换并读取，退出后清理；不修改 EasyMocap 输出、不重新估计手形。
-默认使用 `~/EasyMocap` 和 `~/miniconda3/envs/easymocap/bin/python`，
-可分别用 `EASYMOCAP_ROOT`、`EASYMOCAP_PYTHON` 环境变量覆盖。
-自动适配需要本机 EasyMocap 环境；已有 `betas.json`/`metadata.json` 标准
-目录依然可直接读取，无需 EasyMocap。一个目录同时包含两种格式时会拒绝猜测。
+新版 EasyMocap 标定入口直接输出 `betas.json` 和 `metadata.json`，
+连同试验 NPZ、报告一起保留。加载器优先使用标准 JSON，绝不调用 EasyMocap。
+v2 元数据记录模型文件和实际形状基底指纹，HO-Cap 在拟合前使用本机 manopth 校验，
+无需生产端仓库、Python 环境或原始数据路径。复制这两个 JSON 即可跨机器使用。
+原有 v1 标准目录（例如 `01_standard`、`02_standard`）继续兼容。
 
-仅老版 `test_mano_sequence.py` 输出（无成功状态和模型哈希）仍使用下方
-手工导入方式；新独立标定入口不需要这个额外步骤。
+只有 `trial_shape.npz` 的历史目录需要在原标定机器使用下方手工工具
+转换一次，或用新版入口重新生成。加载时会明确提示，不再偷偷启动转换进程。
 这里简化的是手形输入，不改变动作数据的目录要求。
 
 ### 历史手工导入方式

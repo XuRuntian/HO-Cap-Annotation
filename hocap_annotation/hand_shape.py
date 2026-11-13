@@ -1,26 +1,22 @@
 """Validate reusable fixed-hand-shape bundles before starting a pipeline."""
 
 import json
-import os
+import hashlib
 from pathlib import Path
-import subprocess
-import sys
-import tempfile
 
 import numpy as np
 
 from .rgbd_data import digest
 
 
-def load_hand_shape(directory, mano_root=None):
+def load_hand_shape(directory, mano_root=None, *, verify_basis=True):
     directory = Path(directory).expanduser()
-    if (directory / "trial_shape.npz").is_file():
-        if (directory / "betas.json").exists():
-            raise ValueError("Ambiguous hand shape directory: contains both trial_shape.npz and betas.json")
-        return load_easymocap_shape(directory, mano_root)
+    if (directory / "trial_shape.npz").is_file() and not (directory / "betas.json").is_file():
+        raise ValueError("Legacy trial_shape.npz-only output: export betas.json and metadata.json "
+                         "on the calibration machine first; EasyMocap is not invoked here")
     beta_path = directory / "betas.json"
     metadata = json.loads((directory / "metadata.json").read_text())
-    if metadata.get("schema") != "hocap.fixed_hand_shape.v1":
+    if metadata.get("schema") not in ("hocap.fixed_hand_shape.v1", "hocap.fixed_hand_shape.v2"):
         raise ValueError("Unsupported hand shape metadata schema")
     if metadata.get("hand_order") != ["right", "left"]:
         raise ValueError("Hand shape order must be right,left")
@@ -34,39 +30,34 @@ def load_hand_shape(directory, mano_root=None):
         not isinstance(fingerprints.get(side), str) for side in ("right", "left")
     ):
         raise ValueError("Hand shape metadata must identify both MANO models")
+    if metadata['schema'] == 'hocap.fixed_hand_shape.v2' and mano_root is None:
+        mano_root = Path.home() / 'models/mano'
     if mano_root is not None:
         for side in ("right", "left"):
             asset = Path(mano_root).expanduser() / f"MANO_{side.upper()}.pkl"
             if fingerprints[side] != digest(asset):
                 raise ValueError(f"Hand shape MANO model mismatch: {side}")
+    if metadata['schema'] == 'hocap.fixed_hand_shape.v2':
+        if metadata.get('basis_encoding') != 'float32-le-c-order':
+            raise ValueError('Unsupported MANO basis encoding')
+        expected = metadata.get('basis_sha256')
+        if not isinstance(expected, dict) or set(expected) != {'right', 'left'}:
+            raise ValueError('Missing MANO basis fingerprints')
+        if verify_basis and expected != model_basis_hashes(mano_root):
+            raise ValueError('Hand shape effective MANO basis mismatch')
     return betas.tolist()
 
 
-def load_easymocap_shape(directory, mano_root):
-    """Adapt an EasyMocap output without writing into the source directory."""
-    if mano_root is None:
-        mano_root = Path.home() / "models/mano"
-    mano_root = Path(mano_root).expanduser().resolve()
-    report = json.loads((directory / "report.json").read_text())
-    if report.get("status") != "complete":
-        raise ValueError("EasyMocap shape report must have status complete")
-    for side in ("right", "left"):
-        expected = report.get("model_sha256", {}).get(side)
-        if expected != digest(mano_root / f"MANO_{side.upper()}.pkl"):
-            raise ValueError(f"EasyMocap source MANO model mismatch: {side}")
-    root = Path(os.environ.get("EASYMOCAP_ROOT", Path.home() / "EasyMocap")).expanduser()
-    python = Path(os.environ.get("EASYMOCAP_PYTHON", Path.home() / "miniconda3/envs/easymocap/bin/python")).expanduser()
-    # The launcher may use a lightweight detector environment for intermediate stages.
-    importer_python = os.environ.get("MANO_PYTHON", sys.executable)
-    tool = Path(__file__).resolve().parents[1] / "tools/import_hand_shape.py"
-    with tempfile.TemporaryDirectory(prefix="hocap-hand-shape-") as tmp:
-        output = Path(tmp) / "converted"
-        result = subprocess.run(
-            [importer_python, str(tool), str(directory / "trial_shape.npz"),
-             "--output", str(output), "--easymocap-root", str(root),
-             "--easymocap-python", str(python), "--mano-root", str(mano_root)],
-            capture_output=True, text=True,
-        )
-        if result.returncode:
-            raise ValueError("Automatic EasyMocap shape import failed:\n" + result.stderr[-4000:])
-        return load_hand_shape(output, mano_root)
+def model_basis_hashes(mano_root):
+    from manopth.manolayer import ManoLayer
+
+    result = {}
+    for side in ('right', 'left'):
+        layer = ManoLayer(mano_root=str(mano_root), side=side,
+                          use_pca=True, ncomps=45, flat_hand_mean=False)
+        result[side] = {}
+        for name in ('v_template', 'shapedirs'):
+            array = getattr(layer, 'th_' + name).detach().cpu().numpy()
+            result[side][name] = hashlib.sha256(
+                np.asarray(array, dtype='<f4').tobytes(order='C')).hexdigest()
+    return result

@@ -81,7 +81,9 @@ def main():
     betas = None
     if a.hand_shape:
         try:
-            betas = load_hand_shape(a.hand_shape, a.mano_root)
+            betas = load_hand_shape(
+                a.hand_shape, a.mano_root, verify_basis=a.stage in ("all", "fit")
+            )
         except (OSError, ValueError, TypeError, AttributeError) as exc:
             p.error(f"Invalid --hand-shape: {exc}")
     elif a.betas and a.stage in ("all", "fit"):
