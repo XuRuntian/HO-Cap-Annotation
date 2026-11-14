@@ -50,6 +50,12 @@ def main():
     p.add_argument("--detector-device", choices=["cpu", "gpu"], default="cpu")
     p.add_argument("--detector-mode", choices=["image", "video"], default="video")
     p.add_argument("--cpu-threads", type=int, default=2)
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Concurrent sequences (1..32); one parent writes the batch index",
+    )
     p.add_argument("--triangulation-steps", type=int, default=100)
     p.add_argument("--fit-steps", type=int, default=10000)
     p.add_argument("--lr", type=float, default=0.001)
@@ -67,6 +73,8 @@ def main():
     try:
         if a.cpu_threads < 1:
             raise ValueError("cpu-threads must be positive")
+        if not 1 <= a.workers <= 32:
+            raise ValueError("workers must be between 1 and 32")
         root = a.data_root.resolve()
         if a.jobs_json:
             jobs = json.loads(a.jobs_json.read_text())
@@ -129,7 +137,14 @@ def main():
     import torch
 
     torch.set_num_threads(a.cpu_threads)
-    rows = run_batch(root, a.batch_results, jobs, options)
+    rows = run_batch(
+        root,
+        a.batch_results,
+        jobs,
+        options,
+        workers=a.workers,
+        cpu_threads=a.cpu_threads,
+    )
     print(f"Summary: {a.batch_results / 'summary.csv'}", flush=True)
     return 1 if any(r["status"] == "04_failed" for r in rows) else 0
 

@@ -2,9 +2,11 @@
 
 import contextlib
 import importlib.metadata
+import multiprocessing
 import traceback
 import uuid
 from dataclasses import asdict, dataclass, field
+from multiprocessing.connection import wait
 from pathlib import Path
 
 import cv2
@@ -422,7 +424,117 @@ def _process(source, job, work, options, detail):
         ), "quality passed"
 
 
-def run_batch(data_root, batch_results, jobs, options):
+def _process_job(source, job, workdir, options, report_path, detail):
+    try:
+        log = report_path.with_suffix(".log")
+        detail["log_file"] = log.name
+        with (
+            log.open("x") as stream,
+            contextlib.redirect_stdout(stream),
+            contextlib.redirect_stderr(stream),
+        ):
+            try:
+                status, reason = _process(source, job, workdir, options, detail)
+            except Exception:
+                traceback.print_exc()
+                raise
+    except Exception as exc:
+        status, reason = "04_failed", f"{type(exc).__name__}: {exc}"
+        detail["failure_kind"] = "input" if isinstance(exc, InputError) else "runtime"
+        detail["exception"] = reason
+    return source, report_path, detail, status, reason
+
+
+def _worker_entry(sender, args, cpu_threads):
+    import torch
+
+    torch.set_num_threads(cpu_threads)
+    try:
+        sender.send(_process_job(*args))
+    finally:
+        sender.close()
+
+
+def _job_results(results, resolved, work_root, options, workers, cpu_threads):
+    # Only the parent owns classification/index writes. Spawn avoids inherited CUDA state.
+    context = multiprocessing.get_context("spawn")
+    pending = {}
+    queue = iter(resolved)
+    exhausted = False
+    try:
+        while pending or not exhausted:
+            while len(pending) < workers and not exhausted:
+                try:
+                    source, job = next(queue)
+                except StopIteration:
+                    exhausted = True
+                    break
+                detail = dict(
+                    sequence=str(source),
+                    policy=asdict(options.policy),
+                    mode=options.mode,
+                    stages={},
+                )
+                try:
+                    report_path = results.details(source) / f"{uuid.uuid4().hex}.json"
+                    args = (
+                        source,
+                        job,
+                        work_root / sequence_id(source),
+                        options,
+                        report_path,
+                        detail,
+                    )
+                    if workers == 1:
+                        yield _process_job(*args)
+                        continue
+                    receiver, sender = context.Pipe(duplex=False)
+                    process = context.Process(
+                        target=_worker_entry, args=(sender, args, cpu_threads)
+                    )
+                    try:
+                        process.start()
+                    except BaseException:
+                        receiver.close()
+                        raise
+                    finally:
+                        sender.close()
+                    pending[receiver] = (process, source, report_path, detail)
+                except Exception as exc:
+                    reason = f"{type(exc).__name__}: {exc}"
+                    detail.update(failure_kind="runtime", exception=reason)
+                    yield source, None, detail, "04_failed", reason
+            if not pending:
+                continue
+            for receiver in wait(pending):
+                process, source, report_path, detail = pending[receiver]
+                try:
+                    outcome = receiver.recv()
+                except (EOFError, OSError):
+                    process.join()
+                    reason = f"Worker exited without a result (exit={process.exitcode})"
+                    detail.update(failure_kind="runtime", exception=reason)
+                    outcome = (source, report_path, detail, "04_failed", reason)
+                process.join()
+                receiver.close()
+                del pending[receiver]
+                yield outcome
+    finally:
+        # Each sequence has its own process so a native crash cannot break other workers.
+        for receiver, (process, *_rest) in pending.items():
+            if process.is_alive():
+                process.terminate()
+        for receiver, (process, *_rest) in pending.items():
+            process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            receiver.close()
+
+
+def run_batch(data_root, batch_results, jobs, options, *, workers=1, cpu_threads=2):
+    if not isinstance(workers, int) or not 1 <= workers <= 32 or cpu_threads < 1:
+        raise ValueError("workers must be 1..32 and cpu_threads must be positive")
     data_root = Path(data_root).resolve()
     output = Path(batch_results).absolute()
     work_root = Path(options.work_root or output / "work").absolute()
@@ -443,42 +555,9 @@ def run_batch(data_root, batch_results, jobs, options):
         raise ValueError("Duplicate sequences in batch")
     rows = []
     with BatchResults(output) as results:
-        for source, job in resolved:
-            report_path = None
-            detail = dict(
-                sequence=str(source),
-                policy=asdict(options.policy),
-                mode=options.mode,
-                stages={},
-            )
-            try:
-                details = results.details(source)
-                token = uuid.uuid4().hex
-                log = details / f"{token}.log"
-                report_path = details / f"{token}.json"
-                detail["log_file"] = log.name
-                with (
-                    log.open("x") as stream,
-                    contextlib.redirect_stdout(stream),
-                    contextlib.redirect_stderr(stream),
-                ):
-                    try:
-                        status, reason = _process(
-                            source,
-                            job,
-                            work_root / sequence_id(source),
-                            options,
-                            detail,
-                        )
-                    except Exception:
-                        traceback.print_exc()
-                        raise
-            except Exception as exc:
-                status, reason = "04_failed", f"{type(exc).__name__}: {exc}"
-                detail["failure_kind"] = (
-                    "input" if isinstance(exc, InputError) else "runtime"
-                )
-                detail["exception"] = reason
+        for source, report_path, detail, status, reason in _job_results(
+            results, resolved, work_root, options, workers, cpu_threads
+        ):
             counts = detail.get("valid_counts", ["", ""])
             row = dict(
                 sequence=source.relative_to(data_root).as_posix(),

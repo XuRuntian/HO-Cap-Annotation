@@ -18,6 +18,40 @@
 
 ## 命令
 
+### 兼容旧批量接口
+
+新版 `scripts/run_batch.sh` 保留“数据组目录 + 手形目录”两个位置参数，
+只选择该组直接子目录中的序列，不递归运行其它数据组，也不推断人员手形：
+
+```bash
+JOBS=4 bash scripts/run_batch.sh \
+  /home/adminpc/hand-real-workspace/data/L1-L3-01 \
+  /home/adminpc/hand-real-workspace/hand_shapes/01_standard
+```
+
+`JOBS` 默认2，范围1至32，表示同时处理的序列数，不是同时处理的数据组数。
+多进程使用spawn，各序列独立工作；父进程统一维护一个summary.csv及四个分类目录。
+CUDA设备由所有worker共享，4并行不保证显存足够，OOM时减少JOBS。
+JOBS大于1时每个序列独立进程，普通异常或单个worker崩溃会记录失败，
+其它序列继续处理。JOBS=1保留原串行实现，隔离Python异常，但原生崩溃会
+终止该批次。机器级资源耗尽仍可能影响多个任务。不要同时启动两个任务写同一个结果目录。
+
+默认结果位置为 `数据组的父目录/batch_results/组名-路径哈希/`，不写入原序列。
+可以通过 `BATCH_RESULTS=/absolute/path` 固定输出目录。默认总是启用resume，
+不会像旧脚本那样看到hand_annotations存在就跳过；`REPLACE=1` 才允许重算已有
+未验证阶段（仍受final及导出元数据保护约束）。不要指向正在运行的旧批次目录。
+
+其它环境变量：`MODE=run|precheck|report`（默认run）、`DEVICE=cuda|cpu`、
+`CPU_THREADS=2`（每个worker）、`MANO_ROOT`、`HAND_MODEL`、`MANO_PYTHON`。
+优先使用仓库 `.venv/bin/python`，否则使用本机hocap-annotation Conda环境；
+检测和拟合使用同一Python，不再使用旧的DETECT_PYTHON分环境约定。
+需要后台运行时可用 `nohup env JOBS=4 bash scripts/run_batch.sh ... > batch.log 2>&1 &`。
+
+Python入口也可直接传 `--workers 4`（默认1）；改变并行数不改变阶段来源凭据。
+此前临时四并行命令的独立结果布局不同，本接口不会自动导入它的三角化/拟合凭据。
+
+### 直接使用Python入口
+
 先使用小规模、独立目录，不直接在生产批次重跑：
 
 ```bash
