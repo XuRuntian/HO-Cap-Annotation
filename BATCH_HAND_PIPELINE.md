@@ -36,7 +36,25 @@ JOBS大于1时每个序列独立进程，普通异常或单个worker崩溃会记
 其它序列继续处理。JOBS=1保留原串行实现，隔离Python异常，但原生崩溃会
 终止该批次。机器级资源耗尽仍可能影响多个任务。不要同时启动两个任务写同一个结果目录。
 
-默认结果位置为 `数据组的父目录/batch_results/组名-路径哈希/`，不写入原序列。
+默认结果位置为 `数据组目录/batch_results/`：全组一份summary.csv，每个序列一行。
+四个分类目录内是指向原序列的软链接，不移动或复制原始数据。例如：
+
+```text
+data/L1-L3-01/
+  Basic_Grip_01/
+  3D_Trajectory_Continuity_01/
+  batch_results/
+    summary.csv
+    01_normal/       # 原序列软链接，链接名包含唯一标识
+    02_degraded/
+    03_needs_review/
+    04_failed/
+    details/
+    work/           # 每个序列的独立工作目录，含inputs及predictions
+```
+
+`L1-L3-02`、`L4-L6-02` 各自在自己的目录下生成同样的组级结果。
+原序列内不写入结果，分类链接也不指向work中的预测目录。
 可以通过 `BATCH_RESULTS=/absolute/path` 固定输出目录。默认总是启用resume，
 不会像旧脚本那样看到hand_annotations存在就跳过；`REPLACE=1` 才允许重算已有
 未验证阶段（仍受final及导出元数据保护约束）。不要指向正在运行的旧批次目录。
@@ -48,7 +66,8 @@ JOBS大于1时每个序列独立进程，普通异常或单个worker崩溃会记
 需要后台运行时可用 `nohup env JOBS=4 bash scripts/run_batch.sh ... > batch.log 2>&1 &`。
 
 Python入口也可直接传 `--workers 4`（默认1）；改变并行数不改变阶段来源凭据。
-此前临时四并行命令的独立结果布局不同，本接口不会自动导入它的三角化/拟合凭据。
+此前临时四并行命令的独立结果布局不同，本接口不会自动迁移或合并其结果，
+也不会自动导入它的三角化/拟合凭据。不要为调整目录布局直接重跑正在进行的批次。
 
 ### 直接使用Python入口
 

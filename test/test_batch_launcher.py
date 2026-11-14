@@ -76,6 +76,9 @@ class BatchLauncherTests(unittest.TestCase):
             args[args.index("--sequences") + 1 :], ["./one", "./two with spaces"]
         )
         self.assertIn("--resume", args)
+        self.assertEqual(
+            args[args.index("--batch-results") + 1], str(self.data / "batch_results")
+        )
         self.assertNotIn("--replace", args)
         self.assertFalse((self.data / "one" / "hand_annotations").exists())
 
@@ -91,6 +94,23 @@ class BatchLauncherTests(unittest.TestCase):
         self.assertIn("--replace", args)
         self.assertEqual(args[args.index("--mode") + 1], "precheck")
         self.assertEqual(args[args.index("--batch-results") + 1], "/tmp/custom batch")
+
+    def test_existing_group_results_are_not_selected_as_sequences(self):
+        output = self.data / "batch_results"
+        category = output / "01_normal"
+        category.mkdir(parents=True)
+        (category / "one-id").symlink_to(self.data / "one", target_is_directory=True)
+        (output / "work" / "one-id" / "inputs").mkdir(parents=True)
+        marker = output / "user-note.txt"
+        marker.write_text("keep")
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads(result.stdout.splitlines()[-1])
+        self.assertEqual(
+            args[args.index("--sequences") + 1 :], ["./one", "./two with spaces"]
+        )
+        self.assertEqual(marker.read_text(), "keep")
+        self.assertTrue((category / "one-id").is_symlink())
 
     def test_invalid_settings_and_empty_group_fail_before_execution(self):
         for env in (
@@ -139,7 +159,7 @@ class BatchLauncherTests(unittest.TestCase):
             dict(sequence=str(p.relative_to(data_root)))
             for p in (first, missing, second)
         ]
-        output = self.root / "results"
+        output = data_root / "batch_results"
         rows = run_batch(
             data_root,
             output,
