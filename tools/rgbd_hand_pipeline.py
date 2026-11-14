@@ -49,6 +49,25 @@ def main():
     p.add_argument("--triangulation-steps", type=int, default=100)
     p.add_argument("--min-views", type=int, default=2)
     p.add_argument("--reprojection-px", type=float, default=10.0)
+    p.add_argument(
+        "--no-camera-check",
+        action="store_true",
+        help="Disable sequence-level automatic exclusion; retain per-joint screening",
+    )
+    p.add_argument(
+        "--exclude-cameras",
+        nargs="+",
+        default=[],
+        metavar="CAMERA_ID",
+        help="Manually exclude cameras from reconstruction, not image display",
+    )
+    p.add_argument("--camera-check-samples", type=int, default=48)
+    p.add_argument(
+        "--min-triangulation-angle",
+        type=float,
+        default=1.0,
+        help="Minimum ray angle in degrees; reject ill-conditioned geometry",
+    )
     p.add_argument("--fit-steps", type=int, default=10000)
     p.add_argument("--lr", type=float, default=0.001)
     shape = p.add_mutually_exclusive_group()
@@ -61,7 +80,8 @@ def main():
         "--betas", type=Path, help="JSON [2,10] shared shape: right,left"
     )
     shape.add_argument(
-        "--hand-shape", type=Path,
+        "--hand-shape",
+        type=Path,
         help="EasyMocap output directory or fixed betas.json/metadata.json directory",
     )
     p.add_argument(
@@ -119,6 +139,10 @@ def main():
                 a.reprojection_px,
                 a.min_views,
                 a.replace,
+                camera_check=not a.no_camera_check,
+                exclude_cameras=a.exclude_cameras,
+                camera_check_samples=a.camera_check_samples,
+                min_angle=a.min_triangulation_angle,
             )
         elif stage == "fit":
             pipeline.fit(

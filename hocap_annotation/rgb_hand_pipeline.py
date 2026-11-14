@@ -129,50 +129,98 @@ def project(points, matrices):
 
 
 def triangulate(
-    seq, device="cpu", steps=100, threshold=10.0, min_views=2, replace=False
+    seq,
+    device="cpu",
+    steps=100,
+    threshold=10.0,
+    min_views=2,
+    replace=False,
+    *,
+    camera_check=True,
+    exclude_cameras=(),
+    camera_check_samples=48,
+    min_angle=1.0,
 ):
-    from .triangulation import runner_hand_3d_joints_ransac_torch
+    from .triangulation import robust_triangulate
+    from .camera_consistency import check_cameras
 
-    (path,) = outputs(seq, ["joints_3d.npz"], replace)
+    path, report_path = outputs(
+        seq, ["joints_3d.npz", "camera_consistency.json"], replace
+    )
     obs = seq.load("observations_2d.npz")
     check_observations(seq, obs)
     t, c = len(seq.frame_ids), len(seq.camera_ids)
-    if steps < 0 or threshold <= 0 or not 2 <= min_views <= c:
+    if (
+        steps < 0
+        or not np.isfinite(threshold)
+        or threshold <= 0
+        or not 2 <= min_views <= c
+        or not 0 < min_angle < 90
+    ):
         raise ValueError("Invalid triangulation options")
+    report = check_cameras(
+        obs["keypoints"],
+        obs["valid"],
+        seq.matrices,
+        seq.camera_ids,
+        automatic=camera_check,
+        excluded=exclude_cameras,
+        sample_frames=camera_check_samples,
+        threshold=threshold,
+        min_angle=min_angle,
+        min_views=min_views,
+    )
+    report.update(
+        manifest_sha256=seq.fingerprint,
+        observations_sha256=digest(seq.workdir / "predictions/observations_2d.npz"),
+        sampled_frame_ids=[seq.frame_ids[i] for i in report["sampled_frame_indices"]],
+    )
+    enabled = np.array([cid in report["included_camera_ids"] for cid in seq.camera_ids])
+    print(
+        f"Reconstruction cameras: {report['included_camera_ids']}; excluded: {report['excluded_cameras']}",
+        flush=True,
+    )
+    for warning in report["warnings"]:
+        print(f"Camera check warning: {warning}", flush=True)
     xyz = np.zeros((t, 2, 21, 3), np.float32)
     valid = np.zeros((t, 2, 21), bool)
     inliers = np.zeros((t, c, 2, 21), bool)
     error = np.full((t, c, 2, 21), np.nan, np.float32)
     for i in range(t):
-        marks = np.where(obs["valid"][i, ..., None], obs["keypoints"][i], -1).transpose(
-            1, 0, 2, 3
-        )
-        result = runner_hand_3d_joints_ransac_torch(
-            marks,
+        result, selected = robust_triangulate(
+            obs["keypoints"][i].reshape(c, 42, 2),
+            (obs["valid"][i] & enabled[:, None, None]).reshape(c, 42),
             seq.matrices,
             threshold=threshold,
-            iterations=steps,
+            steps=steps,
             device=device,
             min_views=min_views,
+            min_angle=min_angle,
         )
-        usable = np.isfinite(result).all(-1) & ~np.any(result == -1, axis=-1)
+        result = result.reshape(2, 21, 3)
+        selected = selected.reshape(c, 2, 21)
+        usable = np.isfinite(result).all(-1)
         for h in range(2):
             uv, z = project(result[h], seq.matrices)
             e = np.linalg.norm(uv - obs["keypoints"][i, :, h], axis=-1)
-            good = (
-                obs["valid"][i, :, h]
-                & usable[h]
-                & (z > 1e-5)
-                & np.isfinite(e)
-                & (e < threshold)
-            )
+            good = selected[:, h]
             accepted = usable[h] & (good.sum(axis=0) >= min_views)
             valid[i, h] = accepted
             xyz[i, h, accepted] = result[h, accepted]
             inliers[i, :, h] = good & accepted
             error[i, :, h] = np.where(obs["valid"][i, :, h] & accepted, e, np.nan)
         if i % 25 == 0:
-            print(f"Triangulated {i+1}/{t}", flush=True)
+            print(f"Triangulated {i + 1}/{t}", flush=True)
+    atomic_json(report_path, report)
+    reconstruction = {
+        k: report[k]
+        for k in ("camera_selection", "included_camera_ids", "excluded_cameras")
+    }
+    reconstruction.update(
+        diagnostics_file=report_path.name,
+        diagnostics_sha256=digest(report_path),
+        triangulation_method="pairwise_consensus_inlier_refinement_v1",
+    )
     atomic_npz(
         path,
         **seq.common(),
@@ -180,6 +228,7 @@ def triangulate(
         valid=valid,
         inliers=inliers,
         reprojection_error_px=error,
+        reconstruction_json=np.array(json.dumps(reconstruction, sort_keys=True)),
         observations_sha256=np.array(
             digest(seq.workdir / "predictions/observations_2d.npz")
         ),
@@ -187,9 +236,29 @@ def triangulate(
     log_config(
         seq,
         "triangulate",
-        dict(device=device, steps=steps, threshold_px=threshold, min_views=min_views),
+        dict(
+            device=device,
+            steps=steps,
+            threshold_px=threshold,
+            min_views=min_views,
+            min_angle_deg=min_angle,
+            camera_check=camera_check,
+            camera_check_samples=camera_check_samples,
+            exclude_cameras=list(exclude_cameras),
+        ),
     )
     return path
+
+
+def reconstruction_metadata(seq, tri):
+    """Legacy triangulations have no camera-selection record; never invent one."""
+    if "reconstruction_json" not in tri:
+        return None
+    metadata = json.loads(str(tri["reconstruction_json"]))
+    report = seq.workdir / "predictions/camera_consistency.json"
+    if not report.is_file() or digest(report) != metadata["diagnostics_sha256"]:
+        raise ValueError("Camera consistency report is stale; rerun triangulate")
+    return metadata
 
 
 def fit(
@@ -223,6 +292,7 @@ def fit(
         raise ValueError(
             "Triangulation is stale; rerun triangulate after changing observations"
         )
+    reconstruction_metadata(seq, tri)
     beta = (
         np.zeros((2, 10), np.float32)
         if betas is None
@@ -236,6 +306,8 @@ def fit(
     losses = np.full((2, steps), np.nan, np.float32)
     errors = np.full((t, 2), np.nan, np.float32)
     geometry_error = np.full((t, 2), np.nan, np.float32)
+    camera_errors = np.full((t, len(seq.camera_ids), 2), np.nan, np.float32)
+    camera_inlier_errors = np.full_like(camera_errors, np.nan)
     local = np.zeros((t, 2, 45), np.float32)
     fingerprints = []
     if (
@@ -307,7 +379,7 @@ def fit(
             optimizer.step()
             losses[h, step] = loss.item()
             if step == 0 or (step + 1) % 100 == 0:
-                print(f"Fit {side} {step+1}/{steps}: {loss.item():.6f}", flush=True)
+                print(f"Fit {side} {step + 1}/{steps}: {loss.item():.6f}", flush=True)
         with torch.no_grad():
             _, j = layer(p[:, :48], b, p[:, 48:])
             j = j.cpu().numpy() / 1000.0
@@ -318,6 +390,12 @@ def fit(
         e = np.linalg.norm(uv - obs["keypoints"][indices, :, h], axis=-1)
         for n, i in enumerate(indices):
             selected = tri["inliers"][i, :, h]
+            for ci in range(len(seq.camera_ids)):
+                seen = obs["valid"][i, ci, h]
+                if seen.any():
+                    camera_errors[i, ci, h] = np.median(e[n, ci, seen])
+                if selected[ci].any():
+                    camera_inlier_errors[i, ci, h] = np.median(e[n, ci, selected[ci]])
             errors[i, h] = np.median(e[n][selected]) if selected.any() else np.inf
             geometry_error[i, h] = np.linalg.norm(j[n] - tri["joints"][i, h], axis=-1)[
                 tri["valid"][i, h]
@@ -353,6 +431,8 @@ def fit(
         loss=losses,
         reprojection_median_px=errors,
         joint_error_m=geometry_error,
+        camera_observation_median_px=camera_errors,
+        camera_inlier_median_px=camera_inlier_errors,
         valid=valid,
     )
     log_config(
@@ -413,12 +493,15 @@ def export(seq, replace=False):
         coordinate_system="master_camera:" + seq.manifest["master_serial"],
         image_manifest_sha256=seq.fingerprint,
     )
+    reconstruction = reconstruction_metadata(seq, seq.load("joints_3d.npz"))
+    if reconstruction is not None:
+        meta["reconstruction"] = reconstruction
     if meta_path.exists() and json.loads(meta_path.read_text()) != meta:
         raise ValueError("Export metadata changed; use a new workdir")
     atomic_json(meta_path, meta)
     atomic_npz(path, **arrays)
     print(
-        f'Exported {n} frames, {int(arrays["valid"].sum())} valid hand instances -> {path}',
+        f"Exported {n} frames, {int(arrays['valid'].sum())} valid hand instances -> {path}",
         flush=True,
     )
     return path

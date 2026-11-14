@@ -18,6 +18,9 @@ if [[ $# -eq 0 || ${1:-} == --help || ${1:-} == -h ]]; then
   --hand-shape /path/to/shape         EasyMocap 输出目录或标准手形目录（自动适配校验）
   --mano-root /path/to/models         指定 MANO 资产
   --hand-model /path/to/model.task    指定 MediaPipe 模型
+  --exclude-cameras cam02            手动排除指定相机参与重建，保留重投影显示
+  --no-camera-check                  关闭整段自动排除，仍逐关节筛选异常观测
+  --camera-check-samples 48           整段均匀抽样数量
   --replace                          重算已有结果，不覆盖 final/
 
 环境变量：MANO_PYTHON、DETECT_PYTHON、MANO_ROOT、HAND_MODEL。
