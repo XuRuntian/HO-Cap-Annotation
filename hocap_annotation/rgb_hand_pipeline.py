@@ -30,14 +30,8 @@ def log_config(seq, stage, config):
     atomic_json(path, previous)
 
 
-def detect(seq, model_path, mode="video", device="cpu", replace=False):
-    (path,) = outputs(seq, ["observations_2d.npz"], replace)
-    model_path = Path(model_path).resolve()
-    if not model_path.is_file():
-        raise FileNotFoundError(f"MediaPipe model missing: {model_path}")
-    from .wrappers.mediapipe import MPHandDetector
-
-    config = dict(
+def detection_config(model_path, mode="video", device="cpu"):
+    return dict(
         model_asset_path=str(model_path),
         device=device,
         running_mode=mode,
@@ -47,6 +41,16 @@ def detect(seq, model_path, mode="video", device="cpu", replace=False):
         min_tracking_confidence=0.5,
         min_hand_presence_confidence=0.5,
     )
+
+
+def detect(seq, model_path, mode="video", device="cpu", replace=False):
+    (path,) = outputs(seq, ["observations_2d.npz"], replace)
+    model_path = Path(model_path).resolve()
+    if not model_path.is_file():
+        raise FileNotFoundError(f"MediaPipe model missing: {model_path}")
+    from .wrappers.mediapipe import MPHandDetector
+
+    config = detection_config(model_path, mode, device)
     t, c = len(seq.frame_ids), len(seq.camera_ids)
     xy = np.zeros((t, c, 2, 21, 2), np.float32)
     valid = np.zeros((t, c, 2, 21), bool)
@@ -140,6 +144,7 @@ def triangulate(
     exclude_cameras=(),
     camera_check_samples=48,
     min_angle=1.0,
+    selection_report=None,
 ):
     from .triangulation import robust_triangulate
     from .camera_consistency import check_cameras
@@ -158,18 +163,53 @@ def triangulate(
         or not 0 < min_angle < 90
     ):
         raise ValueError("Invalid triangulation options")
-    report = check_cameras(
-        obs["keypoints"],
-        obs["valid"],
-        seq.matrices,
-        seq.camera_ids,
-        automatic=camera_check,
-        excluded=exclude_cameras,
-        sample_frames=camera_check_samples,
-        threshold=threshold,
-        min_angle=min_angle,
-        min_views=min_views,
+    report = (
+        check_cameras(
+            obs["keypoints"],
+            obs["valid"],
+            seq.matrices,
+            seq.camera_ids,
+            automatic=camera_check,
+            excluded=exclude_cameras,
+            sample_frames=camera_check_samples,
+            threshold=threshold,
+            min_angle=min_angle,
+            min_views=min_views,
+        )
+        if selection_report is None
+        else dict(selection_report)
     )
+    if selection_report is not None:
+        if (
+            report.get("manifest_sha256") != seq.fingerprint
+            or report.get("observations_sha256")
+            != digest(seq.workdir / "predictions/observations_2d.npz")
+            or report["config"]["consensus_threshold_px"] != threshold
+            or report["config"]["min_angle_deg"] != min_angle
+            or set(report["included_camera_ids"]) - set(seq.camera_ids)
+        ):
+            raise ValueError("Camera selection report is stale or incompatible")
+        included = report["included_camera_ids"]
+        omitted = [item["camera_id"] for item in report["excluded_cameras"]]
+        if (
+            len(set(included)) != len(included)
+            or len(set(omitted)) != len(omitted)
+            or set(included) & set(omitted)
+            or set(included) | set(omitted) != set(seq.camera_ids)
+            or len(included) < min_views
+            or report.get("usable") is False
+            or report.get("quality_policy", {}).get("min_views", min_views) != min_views
+        ):
+            raise ValueError("Invalid or unusable camera selection report")
+        camera_check = report.get(
+            "automatic_exclusion", report["camera_selection"] != "manual_only"
+        )
+        camera_check_samples = report["config"]["sample_frames"]
+        exclude_cameras = [
+            item["camera_id"]
+            for item in report["excluded_cameras"]
+            if item["reason"] == "manual_exclusion"
+        ]
     report.update(
         manifest_sha256=seq.fingerprint,
         observations_sha256=digest(seq.workdir / "predictions/observations_2d.npz"),
@@ -271,13 +311,20 @@ def fit(
     min_joints=12,
     max_error_px=25.0,
     replace=False,
+    max_joint_error_m=0.05,
 ):
     import torch
     from manopth.manolayer import ManoLayer
     from .loss import Keypoint2DLoss, Keypoint3DLoss, MANORegLoss, PoseSmoothnessLoss
 
     path, diag = outputs(seq, ["fit_parameters.npz", "fit_diagnostics.npz"], replace)
-    if steps <= 0 or lr <= 0 or not 1 <= min_joints <= 21 or max_error_px <= 0:
+    if (
+        steps <= 0
+        or lr <= 0
+        or not 1 <= min_joints <= 21
+        or max_error_px <= 0
+        or max_joint_error_m <= 0
+    ):
         raise ValueError("Invalid fit options")
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise ValueError(
@@ -405,7 +452,7 @@ def fit(
                 and np.isfinite(e[n][selected]).all()
                 and np.all(z[n][selected] > 1e-5)
                 and errors[i, h] <= max_error_px
-                and geometry_error[i, h] <= 0.05
+                and geometry_error[i, h] <= max_joint_error_m
             )
     common = dict(
         **seq.common(),
@@ -444,6 +491,7 @@ def fit(
             lr=lr,
             min_joints=min_joints,
             max_error_px=max_error_px,
+            max_joint_error_m=max_joint_error_m,
             shape="mean" if betas is None else "provided",
             depth_enabled=False,
             model_sha256=fingerprints,

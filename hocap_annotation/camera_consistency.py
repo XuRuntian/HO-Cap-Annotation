@@ -17,6 +17,14 @@ def check_cameras(
     threshold=10.0,
     min_angle=1.0,
     min_views=2,
+    bad_error_px=30.0,
+    bad_fraction=0.8,
+    min_frames=12,
+    temporal_bins=4,
+    min_covered_bins=3,
+    min_frames_per_bin=3,
+    min_reference_views=3,
+    min_joints=8,
 ):
     """Require independent three-view consensus and temporally spread evidence.
 
@@ -33,18 +41,18 @@ def check_cameras(
         raise ValueError("Too few cameras after manual exclusions")
     total = len(keypoints)
     sampled = np.unique(np.linspace(0, total - 1, min(sample_frames, total), dtype=int))
-    bad_threshold = max(30.0, threshold * 3)
+    bad_threshold = max(bad_error_px, threshold * 3)
     config = dict(
         sample_frames=sample_frames,
         consensus_threshold_px=threshold,
         bad_error_px=bad_threshold,
-        bad_fraction=0.8,
-        min_frames=12,
-        temporal_bins=4,
-        min_covered_bins=3,
-        min_frames_per_bin=3,
-        min_reference_views=3,
-        min_joints=8,
+        bad_fraction=bad_fraction,
+        min_frames=min_frames,
+        temporal_bins=temporal_bins,
+        min_covered_bins=min_covered_bins,
+        min_frames_per_bin=min_frames_per_bin,
+        min_reference_views=min_reference_views,
+        min_joints=min_joints,
         min_angle_deg=min_angle,
     )
     details = {}
@@ -64,13 +72,13 @@ def check_cameras(
                     seen,
                     matrices,
                     threshold=threshold,
-                    min_views=3,
+                    min_views=min_reference_views,
                     min_angle=min_angle,
                 )
                 # Reject ambiguous two-view matches and minority clusters.
                 reliable = (
                     held_out
-                    & (inliers.sum(0) >= 3)
+                    & (inliers.sum(0) >= min_reference_views)
                     & (inliers.sum(0) > seen.sum(0) / 2)
                 )
                 errors = projection_errors(points, xy, matrices)[ci]
@@ -85,8 +93,12 @@ def check_cameras(
                     records.append((int(fi), float(np.median(hand_errors))))
         errors = np.array([r[1] for r in records])
         bins = []
-        for b in range(4):
-            values = [e for f, e in records if min(3, f * 4 // total) == b]
+        for b in range(temporal_bins):
+            values = [
+                e
+                for f, e in records
+                if min(temporal_bins - 1, f * temporal_bins // total) == b
+            ]
             bins.append(
                 dict(
                     frames=len(values),
@@ -98,11 +110,11 @@ def check_cameras(
                 )
             )
         covered = [b for b in bins if b["frames"] >= config["min_frames_per_bin"]]
-        enough = len(records) >= config["min_frames"] and len(covered) >= 3
+        enough = len(records) >= min_frames and len(covered) >= min_covered_bins
         persistent = (
             enough
-            and (errors > bad_threshold).mean() >= 0.8
-            and all(b["bad_fraction"] >= 0.8 for b in covered)
+            and (errors > bad_threshold).mean() >= bad_fraction
+            and all(b["bad_fraction"] >= bad_fraction for b in covered)
         )
         status = (
             "manually_excluded"
@@ -132,7 +144,7 @@ def check_cameras(
         )
     warnings = []
     # Do not choose arbitrary winners when the evidence would remove the core.
-    if enabled.sum() - len(candidates) < max(3, min_views):
+    if enabled.sum() - len(candidates) < max(min_reference_views, min_views):
         for ci in candidates:
             details[camera_ids[ci]]["status"] = "ambiguous_retained"
         if candidates:
