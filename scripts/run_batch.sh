@@ -7,6 +7,7 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
       'Usage: JOBS=4 bash scripts/run_batch.sh DATA_PARENT HAND_SHAPE_DIRECTORY' \
       'Only direct child sequences containing rgbd/ are selected.' \
       'Default results: DATA_PARENT/batch_results (one summary for the whole group).' \
+      'Each sequence keeps inputs/predictions in its own hand_annotations/ directory.' \
       'Environment: JOBS (default 2), MODE (run/precheck/report), BATCH_RESULTS,' \
       'MANO_PYTHON, MANO_ROOT, HAND_MODEL, DEVICE, CPU_THREADS, REPLACE (0/1).' \
       'Resume is always enabled; REPLACE=1 explicitly permits stale-stage recomputation.'

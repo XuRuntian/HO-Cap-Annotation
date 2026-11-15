@@ -42,6 +42,11 @@ JOBS大于1时每个序列独立进程，普通异常或单个worker崩溃会记
 ```text
 data/L1-L3-01/
   Basic_Grip_01/
+    rgbd/
+    hand_annotations/
+      inputs/
+      predictions/
+      final/        # 标注软件保存的人工结果，批量流程不覆盖
   3D_Trajectory_Continuity_01/
   batch_results/
     summary.csv
@@ -50,11 +55,13 @@ data/L1-L3-01/
     03_needs_review/
     04_failed/
     details/
-    work/           # 每个序列的独立工作目录，含inputs及predictions
 ```
 
 `L1-L3-02`、`L4-L6-02` 各自在自己的目录下生成同样的组级结果。
-原序列内不写入结果，分类链接也不指向work中的预测目录。
+每个序列的准备图像和预测保存在自己的 `hand_annotations/`，与旧单序列流程一致。
+分类链接指向原序列；打开后可找到该序列的hand_annotations。
+标注软件仍可直接 `python pose_annotator.py /path/to/Basic_Grip_01`，
+自动优先恢复final，否则读取predictions；本布局不要求改标注软件的路径逻辑。
 可以通过 `BATCH_RESULTS=/absolute/path` 固定输出目录。默认总是启用resume，
 不会像旧脚本那样看到hand_annotations存在就跳过；`REPLACE=1` 才允许重算已有
 未验证阶段（仍受final及导出元数据保护约束）。不要指向正在运行的旧批次目录。
@@ -66,12 +73,15 @@ data/L1-L3-01/
 需要后台运行时可用 `nohup env JOBS=4 bash scripts/run_batch.sh ... > batch.log 2>&1 &`。
 
 Python入口也可直接传 `--workers 4`（默认1）；改变并行数不改变阶段来源凭据。
-此前临时四并行命令的独立结果布局不同，本接口不会自动迁移或合并其结果，
-也不会自动导入它的三角化/拟合凭据。不要为调整目录布局直接重跑正在进行的批次。
+此前版本把结果放在batch_results/work中，本接口不会自动移动旧结果。
+迁移应在任务退出后，确认目标hand_annotations不存在，将完整工作目录迁回，
+校验图像与预测哈希并更新详细报告中的workdir；不要覆盖已有目录或人工final。
+保持文件内容和来源不变的完整迁移不会使阶段凭据失效，续跑仍需通过来源校验。
 
 ### 直接使用Python入口
 
-先使用小规模、独立目录，不直接在生产批次重跑：
+先使用小规模序列验证。默认输出到各序列的hand_annotations；需要隔离实验时，
+显式增加 `--work-root /path/to/isolated_work`，不要直接覆盖生产结果：
 
 ```bash
 PY="$HOME/miniconda3/envs/hocap-annotation/bin/python"
@@ -143,10 +153,12 @@ batch_results/
   04_failed/<唯一ID> -> 原序列
   details/<唯一ID>/<运行ID>.json # 输入、几何、覆盖、质量、阈值、阶段复用记录
   details/<唯一ID>/<运行ID>.log  # 阶段输出和异常堆栈
-  work/<唯一ID>/                # 默认独立工作目录，可用 --work-root 更换
-    batch_state.json
-    inputs/
-    predictions/
+
+<原序列>/hand_annotations/
+  batch_state.json              # 阶段来源和输出哈希
+  inputs/
+  predictions/
+  final/                        # 人工保存，由标注软件维护
 ```
 
 分类目录内本工具只创建软链接，不复制或移动原序列。唯一ID包含规范化原序列
@@ -162,8 +174,10 @@ right_valid_frames、left_valid_frames、reason。有效帧数来自通过质量
 尚未验证拟合的字段为空；已验证拟合但该手确实无有效结果时才写0。
 路径及工作目录详情可通过 `batch_index.json` 和 `details/` 对照。
 
-工作目录默认在batch_results下，不写回原序列。输出根不能与任何原序列目录
-互相包含；工作目录中存在 `final/` 时拒绝写入。原序列已有的 `final/` 完全不动。
+工作目录默认是每个原序列下的 `hand_annotations/`，不修改rgbd原始输入。
+汇总输出根不能与任何原序列目录互相包含（可以放在数据组下，与各序列并列）。
+显式指定的 `--work-root` 同样不能与原序列互相包含，工作目录为其下的唯一ID目录。
+工作目录中存在 `final/` 时拒绝写入，即使指定replace也不例外；仅报告模式可只读检查。
 已有输出目录中的软链接也不会被当作可写预测路径使用。
 
 ## 输入与复用
@@ -179,7 +193,8 @@ RGB时间戳有限且递增（含VIDEO毫秒精度）、跨相机时间跨度。
 
 默认寻找原序列 `hand_annotations/` 的2D观测，可用 `--reuse-workdir-name`
 或job的 `reuse_workdir` 指定。只复用有匹配manifest、camera/frame顺序、有效数组、
-检测模型哈希及完整检测配置的观测。合法复用会写到独立工作目录，旧结果不动。
+检测模型哈希及完整检测配置的观测。默认直接验证本序列hand_annotations中的结果；
+显式选择独立work-root时，合法的旧检测可以复制到独立工作目录，旧结果不动。
 若缺少可验证的旧检测配置，会记录原因并重新检测；不会猜测其检测参数。
 缺少本地检测模型时不能验证模型身份，应提供 `--hand-model`。
 

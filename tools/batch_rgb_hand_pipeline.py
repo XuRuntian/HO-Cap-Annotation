@@ -29,7 +29,7 @@ def main():
     p.add_argument(
         "--work-root",
         type=Path,
-        help="Independent workdirs; default: batch_results/work/<unique-id>",
+        help="Opt-in independent workdirs; default: <sequence>/hand_annotations",
     )
     p.add_argument("--reuse-workdir-name", default="hand_annotations")
     p.add_argument("--resume", action="store_true")

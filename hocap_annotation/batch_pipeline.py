@@ -480,7 +480,9 @@ def _job_results(results, resolved, work_root, options, workers, cpu_threads):
                     args = (
                         source,
                         job,
-                        work_root / sequence_id(source),
+                        (work_root / sequence_id(source))
+                        if work_root is not None
+                        else source / "hand_annotations",
                         options,
                         report_path,
                         detail,
@@ -537,13 +539,15 @@ def run_batch(data_root, batch_results, jobs, options, *, workers=1, cpu_threads
         raise ValueError("workers must be 1..32 and cpu_threads must be positive")
     data_root = Path(data_root).resolve()
     output = Path(batch_results).absolute()
-    work_root = Path(options.work_root or output / "work").absolute()
+    work_root = (
+        Path(options.work_root).absolute() if options.work_root is not None else None
+    )
     resolved = []
     for job in jobs:
         source = (data_root / job["sequence"]).resolve()
         if not source.is_relative_to(data_root):
             raise ValueError("Sequence outside data root")
-        for dest in (output, work_root):
+        for dest in (output, *([work_root] if work_root is not None else [])):
             if dest.resolve().is_relative_to(source) or source.is_relative_to(
                 dest.resolve()
             ):

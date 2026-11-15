@@ -323,6 +323,10 @@ class BatchRunTests(unittest.TestCase):
             self.assertEqual([r["status"] for r in rows], ["04_failed", "01_normal"])
             self.assertEqual(rows[0]["right_valid_frames"], "")
             self.assertEqual(rows[1]["right_valid_frames"], 48)
+            standard = root / 'capture/hand_annotations'
+            self.assertTrue((standard / 'inputs/manifest.json').is_file())
+            self.assertTrue((standard / 'predictions/mano.npz').is_file())
+            self.assertFalse((root / 'results/work').exists())
             with patch.object(
                 pipeline, "fit", side_effect=AssertionError("must reuse")
             ):
@@ -367,6 +371,50 @@ class BatchRunTests(unittest.TestCase):
             self.assertEqual(
                 before, {p: digest(p) for p in data.rglob("*") if p.is_file()}
             )
+
+    def test_relocated_workdir_reuses_receipts_in_standard_layout(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(pipeline, 'fit', self.fitted_fixture):
+            root = Path(root)
+            options, jobs = self.setup_batch(root)
+            isolated = root / 'isolated'
+            rows = run_batch(root, root/'results', jobs, replace(options, work_root=isolated))
+            self.assertEqual(rows[0]['status'], '01_normal')
+            old = isolated / sequence_id(root/'capture')
+            standard = root / 'capture/hand_annotations'
+            before = {str(p.relative_to(old)): (digest(p), p.stat().st_mtime_ns)
+                      for p in (old/'predictions').iterdir() if p.is_file()}
+            old.rename(standard)
+            with patch.object(pipeline, 'fit', side_effect=AssertionError('must reuse moved result')):
+                for mode in ('report', 'run'):
+                    rows = run_batch(root, root/'results', jobs, replace(options, mode=mode, resume=True))
+                    self.assertEqual(rows[0]['status'], '01_normal')
+            after = {str(p.relative_to(standard)): (digest(p), p.stat().st_mtime_ns)
+                     for p in (standard/'predictions').iterdir() if p.is_file()}
+            self.assertEqual(before, after)
+            reports = sorted((root/'results/details').glob('*/*.json'), key=lambda p: p.stat().st_mtime_ns)
+            self.assertEqual(json.loads(reports[-1].read_text())['workdir'], str(standard))
+
+    def test_standard_layout_protects_existing_final_even_with_replace(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(pipeline, 'fit', self.fitted_fixture):
+            root = Path(root)
+            options, jobs = self.setup_batch(root)
+            run_batch(root, root/'results', jobs, options)
+            standard = root/'capture/hand_annotations'
+            (standard/'final').mkdir()
+            (standard/'final/mano.npz').write_bytes(b'human annotation, never overwrite')
+            before = {str(p): digest(p) for p in standard.rglob('*') if p.is_file()}
+            rows = run_batch(root, root/'results', jobs, replace(options, resume=True, replace=True))
+            self.assertEqual(rows[0]['status'], '04_failed')
+            self.assertIn('final/', rows[0]['reason'])
+            self.assertEqual(before, {str(p): digest(p) for p in standard.rglob('*') if p.is_file()})
+
+    def test_explicit_work_root_cannot_overlap_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            for unsafe in (root/'capture', root/'capture/rgbd', root):
+                with self.assertRaisesRegex(ValueError, 'overlap'):
+                    run_batch(root, root/'results', [dict(sequence='capture')],
+                              BatchOptions(work_root=unsafe))
 
     def test_missing_detection_runs_once_and_precheck_does_not_fit(self):
         with tempfile.TemporaryDirectory() as root:
