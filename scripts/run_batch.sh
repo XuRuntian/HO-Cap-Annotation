@@ -4,11 +4,11 @@ set -euo pipefail
 
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
     printf '%s\n' \
-      'Usage: JOBS=4 bash scripts/run_batch.sh DATA_PARENT HAND_SHAPE_DIRECTORY' \
+      'Usage: bash scripts/run_batch.sh DATA_PARENT HAND_SHAPE_DIRECTORY' \
       'Only direct child sequences containing rgbd/ are selected.' \
-      'Default results: DATA_PARENT/batch_results (one summary for the whole group).' \
-      'Each sequence keeps inputs/predictions in its own hand_annotations/ directory.' \
-      'Environment: JOBS (default 2), MODE (run/precheck/report), BATCH_RESULTS,' \
+      'Default: FAH, one worker, results and predictions under DATA_PARENT/batch_results_fah.' \
+      'DETECTOR=mediapipe restores the original detector and output locations.' \
+      'Environment: DETECTOR, FAH_PYTHON, FAH_CONFIG, JOBS, MODE, BATCH_RESULTS,' \
       'MANO_PYTHON, MANO_ROOT, HAND_MODEL, DEVICE, CPU_THREADS, REPLACE (0/1).' \
       'Resume is always enabled; REPLACE=1 explicitly permits stale-stage recomputation.'
     exit 0
@@ -17,7 +17,13 @@ if [[ $# -ne 2 || ! -d $1 || ! -d $2 ]]; then
     echo 'Usage: bash scripts/run_batch.sh DATA_PARENT HAND_SHAPE_DIRECTORY' >&2
     exit 2
 fi
-JOBS=${JOBS:-2}
+DETECTOR=${DETECTOR:-fah}
+case "$DETECTOR" in
+    fah) DEFAULT_JOBS=1; RESULTS_NAME=batch_results_fah ;;
+    mediapipe) DEFAULT_JOBS=2; RESULTS_NAME=batch_results ;;
+    *) echo 'DETECTOR must be fah or mediapipe.' >&2; exit 2 ;;
+esac
+JOBS=${JOBS:-$DEFAULT_JOBS}
 if [[ ! $JOBS =~ ^[1-9][0-9]?$ ]] || (( JOBS > 32 )); then
     echo 'JOBS must be an integer between 1 and 32.' >&2
     exit 2
@@ -39,6 +45,10 @@ fi
 command -v "$MANO_PYTHON" >/dev/null || { echo 'Set MANO_PYTHON to the pipeline Python.' >&2; exit 2; }
 MODE=${MODE:-run}
 case "$MODE" in run|precheck|report) ;; *) echo 'Invalid MODE.' >&2; exit 2;; esac
+if [[ $DETECTOR == fah && $MODE != report && $JOBS != 1 ]]; then
+    echo 'Use JOBS=1 for FAH detection to avoid GPU memory contention.' >&2
+    exit 2
+fi
 REPLACE_ARGS=()
 case "${REPLACE:-0}" in
     0) ;;
@@ -56,16 +66,19 @@ if (( ${#SEQUENCES[@]} == 0 )); then
     echo 'No direct child sequences containing rgbd/.' >&2
     exit 2
 fi
-BATCH_RESULTS=${BATCH_RESULTS:-"$ROOT/batch_results"}
+BATCH_RESULTS=${BATCH_RESULTS:-"$ROOT/$RESULTS_NAME"}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
 export MKL_NUM_THREADS=${MKL_NUM_THREADS:-1}
 unset LD_LIBRARY_PATH
-printf 'Sequences: %s; workers: %s; mode: %s\nResults: %s\n' "${#SEQUENCES[@]}" "$JOBS" "$MODE" "$BATCH_RESULTS"
+printf 'Sequences: %s; detector: %s; workers: %s; mode: %s\nResults: %s\n' \
+    "${#SEQUENCES[@]}" "$DETECTOR" "$JOBS" "$MODE" "$BATCH_RESULTS"
 exec "$MANO_PYTHON" "$REPO/tools/batch_rgb_hand_pipeline.py" "$ROOT" \
     --batch-results "$BATCH_RESULTS" --hand-shape "$SHAPE" \
     --mano-root "${MANO_ROOT:-$HOME/models/mano}" \
     --hand-model "${HAND_MODEL:-$REPO/config/checkpoints/mediapipe/hand_landmarker.task}" \
+    --detector "$DETECTOR" --fah-python "${FAH_PYTHON:-$HOME/FAH/.venv/bin/python}" \
+    --fah-config "${FAH_CONFIG:-$HOME/FAH/configs/local.json}" \
     --device "${DEVICE:-cuda}" --cpu-threads "${CPU_THREADS:-2}" \
     --workers "$JOBS" --mode "$MODE" --resume "${REPLACE_ARGS[@]}" \
     --sequences "${SEQUENCES[@]}"

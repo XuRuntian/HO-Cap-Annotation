@@ -90,6 +90,48 @@ def observations(seq, points):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_fah_observation_contract(self):
+        from hocap_annotation.wrappers.fah_detector import _infer
+
+        cameras = {
+            "a": {"intrinsics": dict(fx=70, fy=71, ppx=40, ppy=32)},
+            "b": {"intrinsics": dict(fx=80, fy=81, ppx=41, ppy=33)},
+        }
+        rgb = np.tile(np.array([17, 29, 43], np.uint8), (64, 80, 1))
+        seq = SimpleNamespace(
+            frame_ids=["10", "20"],
+            camera_ids=list(cameras),
+            manifest={"cameras": cameras},
+            image=lambda i, cid: rgb,
+        )
+        calls = []
+
+        def model(bgr, *, K):
+            np.testing.assert_array_equal(bgr[0, 0], [43, 29, 17])
+            calls.append(K.copy())
+            if len(calls) != 1:
+                return []
+            winner = np.full((21, 2), 20.0)
+            winner[1, 0] = np.nan
+            return [
+                {"is_right": False, "score": 0.9, "joints2d": np.full((21, 2), 30)},
+                {"is_right": True, "score": 0.1, "joints2d": np.full((21, 2), 10)},
+                {"is_right": True, "score": 0.7, "joints2d": winner},
+            ]
+
+        obs = _infer(seq, model)
+        self.assertEqual(obs["keypoints"].shape, (2, 2, 2, 21, 2))
+        np.testing.assert_array_equal(calls[0], [[70, 0, 40], [0, 71, 32], [0, 0, 1]])
+        np.testing.assert_array_equal(calls[2], [[80, 0, 41], [0, 81, 33], [0, 0, 1]])
+        np.testing.assert_array_equal(obs["keypoints"][0, 0, :, 0], [[20, 20], [30, 30]])
+        np.testing.assert_array_equal(obs["keypoints"][0, 0, 0, 1], [0, 0])
+        self.assertFalse(obs["valid"][0, 0, 0, 1])
+        self.assertFalse(obs["valid"][1].any())
+        self.assertFalse(obs["valid"][:, 1].any())
+        self.assertTrue(obs["duplicate_side"][0, 0, 0])
+        self.assertAlmostEqual(float(obs["detection_score"][0, 0, 0]), 0.7)
+        self.assertNotIn("handedness_score", obs)
+
     def test_prepare_rectified_contract_and_source_immutable(self):
         with tempfile.TemporaryDirectory() as root:
             data, seq = capture(root)

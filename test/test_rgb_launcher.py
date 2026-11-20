@@ -19,9 +19,11 @@ class LauncherTests(unittest.TestCase):
         self.home = Path(self.temporary.name)
         self.log = self.home / "calls.jsonl"
         self.env = {k: v for k, v in os.environ.items()
-                    if k not in ("MANO_PYTHON", "DETECT_PYTHON", "MANO_ROOT", "HAND_MODEL")}
+                    if k not in ("MANO_PYTHON", "DETECT_PYTHON", "MANO_ROOT", "HAND_MODEL",
+                                 "DETECTOR", "FAH_PYTHON", "FAH_CONFIG")}
         self.env.update(HOME=str(self.home), LAUNCH_LOG=str(self.log))
         self.python = self.make_interpreter("miniconda3/envs/hocap-annotation/bin/python")
+        self.fah_python = self.make_interpreter("FAH/.venv/bin/python")
 
     def make_interpreter(self, relative):
         path = self.home / relative
@@ -48,7 +50,11 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual([c[c.index("--stage") + 1] for c in calls],
                          ["prepare", "detect", "triangulate", "fit", "export"])
         for call in calls:
-            self.assertEqual(call[0], str(self.python))
+            stage = call[call.index("--stage") + 1]
+            self.assertEqual(call[0], str(self.fah_python if stage == "detect" else self.python))
+            self.assertEqual(call[call.index("--detector") + 1], "fah")
+            self.assertEqual(call[call.index("--fah-config") + 1],
+                             str(self.home / "FAH/configs/local.json"))
             self.assertEqual(call[call.index("--device") + 1], "cuda")
             self.assertEqual(call[call.index("--mano-root") + 1], str(self.home / "models/mano"))
             self.assertIn("--mean-hand", call)
@@ -57,12 +63,14 @@ class LauncherTests(unittest.TestCase):
     def test_environment_and_cli_overrides(self):
         custom = self.make_interpreter("custom/python")
         self.env.update(MANO_PYTHON=str(custom), MANO_ROOT="/custom/mano", HAND_MODEL="/custom/hand.task")
-        result, calls = self.launch("--device", "cpu", "--betas", "shape.json")
+        result, calls = self.launch("--detector", "mediapipe", "--device", "cpu",
+                                    "--betas", "shape.json")
         self.assertEqual(result.returncode, 0, result.stderr)
         for call in calls:
             self.assertEqual(call[0], str(custom))
             self.assertIn("/custom/mano", call)
             self.assertIn("/custom/hand.task", call)
+            self.assertEqual(call[call.index("--detector") + 1], "mediapipe")
             self.assertNotIn("--mean-hand", call)
             self.assertEqual(call[-4:], ["--device", "cpu", "--betas", "shape.json"])
 

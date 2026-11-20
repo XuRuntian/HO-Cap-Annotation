@@ -23,10 +23,12 @@ def main():
     p.add_argument(
         "--workdir",
         type=Path,
-        help="Default: DATA_ROOT/hand_annotations; final/ is never written",
+        help="Default: hand_annotations_fah for FAH, hand_annotations for MediaPipe",
     )
     p.add_argument("--mano-root", type=Path)
     p.add_argument("--hand-model", type=Path, help="MediaPipe hand_landmarker.task")
+    p.add_argument("--detector", choices=["mediapipe", "fah"], default="mediapipe")
+    p.add_argument("--fah-config", type=Path, help="FAH configs/local.json")
     p.add_argument(
         "--device",
         choices=["cpu", "cuda"],
@@ -90,9 +92,13 @@ def main():
         help="Explicitly recompute existing stage outputs; never final/",
     )
     a = p.parse_args()
-    workdir = (a.workdir or a.data_root / "hand_annotations").resolve()
-    if a.stage in ("all", "detect") and not a.hand_model:
-        p.error("--hand-model is required for detection")
+    workdir_name = "hand_annotations_fah" if a.detector == "fah" else "hand_annotations"
+    workdir = (a.workdir or a.data_root / workdir_name).resolve()
+    if a.stage in ("all", "detect"):
+        if a.detector == "mediapipe" and not a.hand_model:
+            p.error("--hand-model is required for MediaPipe detection")
+        if a.detector == "fah" and not a.fah_config:
+            p.error("--fah-config is required for FAH detection")
     if a.stage in ("all", "fit"):
         if not a.mano_root:
             p.error("--mano-root is required for fitting")
@@ -128,9 +134,14 @@ def main():
 
             torch.set_num_threads(a.cpu_threads)
         if stage == "detect":
-            pipeline.detect(
-                seq, a.hand_model, a.detector_mode, a.detector_device, a.replace
-            )
+            if a.detector == "fah":
+                from hocap_annotation.wrappers.fah_detector import detect
+
+                detect(seq, a.fah_config, a.replace)
+            else:
+                pipeline.detect(
+                    seq, a.hand_model, a.detector_mode, a.detector_device, a.replace
+                )
         elif stage == "triangulate":
             pipeline.triangulate(
                 seq,

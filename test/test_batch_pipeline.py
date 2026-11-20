@@ -16,7 +16,9 @@ import numpy as np
 from hocap_annotation.batch_cache import StageCache, StaleStage
 from hocap_annotation.batch_inputs import InputError, inspect_inputs, verify_prepared
 from hocap_annotation.batch_quality import QualityPolicy, final_quality, precheck
-from hocap_annotation.batch_pipeline import BatchOptions, run_batch
+from hocap_annotation.batch_pipeline import (
+    BatchOptions, OUTPUTS, detection_signature, run_batch, verified_detection,
+)
 from hocap_annotation import rgb_hand_pipeline as pipeline
 from hocap_annotation.batch_results import BatchResults, sequence_id
 from hocap_annotation.rgbd_data import (
@@ -114,6 +116,47 @@ class BatchPolicyTests(unittest.TestCase):
 
 
 class BatchStorageTests(unittest.TestCase):
+    def test_fah_receipt_rejects_mediapipe_and_changed_detector_weights(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, seq = nonempty_capture(root)
+            release = root / "weights/fah"
+            release.mkdir(parents=True)
+            atomic_json(release / "config.json", dict(model="model.pt", detector="det.pt"))
+            for path in (
+                release / "model.pt", release / "det.pt",
+                root / "sam3d/model_config.yaml", root / "sam3d/assets/mhr_model.pt",
+                root / "mano/MANO_LEFT.pkl", root / "mano/MANO_RIGHT.pkl",
+                root / "hand_landmarker.task",
+            ):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"asset")
+            config = root / "local.json"
+            atomic_json(config, dict(weights="weights", sam3d="sam3d", mano_dir="mano"))
+            fah = BatchOptions(detector="fah", fah_config=config)
+            mp = BatchOptions(hand_model=root / "hand_landmarker.task")
+            key = detection_signature(seq, fah)
+            self.assertEqual(key["config"]["model_sha256"],
+                             detection_signature(seq, mp)["config"]["model_sha256"])
+            t, c = len(seq.frame_ids), len(seq.camera_ids)
+            path = seq.workdir / OUTPUTS["detect"][0]
+            atomic_npz(path, **seq.common(), detector=np.array("fah"),
+                       model_sha256=np.array(key["config"]["model_sha256"]),
+                       keypoints=np.zeros((t, c, 2, 21, 2), np.float32),
+                       valid=np.zeros((t, c, 2, 21), bool))
+            pipeline.log_config(seq, "detect", key["config"])
+            verified_detection(seq, key)
+            with self.assertRaisesRegex(StaleStage, "backend mismatch"):
+                verified_detection(seq, detection_signature(seq, mp))
+            with StageCache(seq.workdir, data) as cache:
+                cache.record("detect", key, OUTPUTS["detect"])
+                self.assertTrue(cache.valid("detect", key, OUTPUTS["detect"]))
+                (release / "det.pt").write_bytes(b"different detector weights")
+                changed = detection_signature(seq, fah)
+                self.assertFalse(cache.valid("detect", changed, OUTPUTS["detect"]))
+                with self.assertRaisesRegex(StaleStage, "changed detection configuration"):
+                    verified_detection(seq, changed)
+
     def test_owned_links_update_without_touching_user_files(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

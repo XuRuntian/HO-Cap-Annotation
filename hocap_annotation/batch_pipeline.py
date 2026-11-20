@@ -3,6 +3,8 @@
 import contextlib
 import importlib.metadata
 import multiprocessing
+import os
+import subprocess
 import traceback
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -18,6 +20,7 @@ from .batch_inputs import InputError, inspect_inputs, verify_prepared
 from .batch_quality import QualityPolicy, final_quality, precheck
 from .batch_results import BatchResults, sequence_id
 from .hand_shape import load_hand_shape
+from .wrappers.fah_detector import detection_spec as fah_detection_spec
 from .rgbd_data import (
     PreparedSequence,
     atomic_json,
@@ -42,9 +45,12 @@ class BatchOptions:
     resume: bool = False
     replace: bool = False
     work_root: Path | None = None
-    reuse_workdir_name: str = "hand_annotations"
+    reuse_workdir_name: str | None = None
     hand_model: Path | None = None
     mano_root: Path | None = None
+    detector: str = "mediapipe"
+    fah_config: Path | None = None
+    fah_python: Path | None = None
     detector_mode: str = "video"
     detector_device: str = "cpu"
     device: str = "cuda"
@@ -75,17 +81,31 @@ class BatchOptions:
             raise ValueError("Invalid device/detector mode")
         if self.detector_device not in ("cpu", "gpu"):
             raise ValueError("Invalid detector device")
-        if Path(self.reuse_workdir_name).name != self.reuse_workdir_name:
+        if self.detector not in ("mediapipe", "fah"):
+            raise ValueError("Invalid detector backend")
+        if self.detector == "fah":
+            if self.fah_config is None or not self.fah_config.is_file():
+                raise ValueError("FAH requires a local --fah-config")
+            if self.mode != "report" and (
+                self.fah_python is None or not self.fah_python.is_file()
+                or not os.access(self.fah_python, os.X_OK)
+            ):
+                raise ValueError("FAH requires an executable --fah-python")
+        if self.reuse_workdir_name is not None and (
+            not self.reuse_workdir_name
+            or self.reuse_workdir_name in (".", "..")
+            or Path(self.reuse_workdir_name).name != self.reuse_workdir_name
+        ):
             raise ValueError("reuse-workdir-name must be a single directory name")
 
 
-def implementation(stage):
+def implementation(stage, detector="mediapipe"):
     root = Path(__file__).parent
     names = ["rgbd_data.py"]
     if stage != "prepare":
         names += ["rgb_hand_pipeline.py"]
     if stage == "detect":
-        names += ["wrappers/mediapipe.py"]
+        names += ["wrappers/fah_detector.py" if detector == "fah" else "wrappers/mediapipe.py"]
     if stage == "triangulate":
         names += ["triangulation.py", "camera_consistency.py", "batch_quality.py"]
     if stage == "fit":
@@ -102,6 +122,13 @@ def implementation(stage):
 
 
 def detection_signature(seq, options):
+    if options.detector == "fah":
+        _, config = fah_detection_spec(options.fah_config)
+        return dict(
+            manifest_sha256=seq.fingerprint,
+            config=config,
+            implementation=implementation("detect", "fah"),
+        )
     if options.hand_model is None or not Path(options.hand_model).is_file():
         raise ValueError(
             "A local --hand-model is required to validate/recompute detections"
@@ -123,6 +150,8 @@ def detection_signature(seq, options):
 def verified_detection(seq, signature):
     obs = seq.load("observations_2d.npz")
     pipeline.check_observations(seq, obs)
+    if str(obs.get("detector", "mediapipe")) != signature["config"].get("detector", "mediapipe"):
+        raise StaleStage("Detection backend mismatch")
     if str(obs.get("model_sha256", "")) != signature["config"]["model_sha256"]:
         raise StaleStage("Detection model fingerprint mismatch")
     config = read_json(seq.workdir / "predictions/run_config.json").get("detect")
@@ -133,11 +162,36 @@ def verified_detection(seq, signature):
     return obs
 
 
-def reusable_detection(workdir, source, inspection, options):
+def run_detection(source, seq, options, signature):
+    if options.detector == "mediapipe":
+        return pipeline.detect(
+            seq, options.hand_model, options.detector_mode, options.detector_device,
+            replace=options.replace,
+        )
+    cli = Path(__file__).resolve().parents[1] / "tools/rgbd_hand_pipeline.py"
+    command = [
+        str(options.fah_python.absolute()), str(cli), str(source),
+        "--stage", "detect", "--workdir", str(seq.workdir),
+        "--detector", "fah", "--fah-config", str(options.fah_config),
+    ]
+    if options.replace:
+        command.append("--replace")
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    completed = subprocess.run(
+        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
+    if completed.stdout:
+        print(completed.stdout, end="", flush=True)
+    completed.check_returncode()
+    verified_detection(seq, signature)
+
+
+def reusable_detection(workdir, source, inspection, signature):
     with StageCache(workdir, source, readonly=True) as original_cache:
         original = PreparedSequence(workdir)
         verify_prepared(original, inspection)
-        key = detection_signature(original, options)
+        key = dict(signature, manifest_sha256=original.fingerprint)
         if "detect" in original_cache.state["stages"] and not original_cache.valid(
             "detect", key, OUTPUTS["detect"]
         ):
@@ -187,8 +241,10 @@ def _process(source, job, work, options, detail):
     detail["input"] = {k: v for k, v in inspection.items() if k != "expected_manifest"}
     detail["total_frames"] = inspection["total_frames"]
     readonly = options.mode == "report"
+    default_reuse = "hand_annotations_fah" if options.detector == "fah" else "hand_annotations"
+    reuse_name = options.reuse_workdir_name or default_reuse
     reuse = Path(
-        job.get("reuse_workdir", source / options.reuse_workdir_name)
+        job.get("reuse_workdir", source / reuse_name)
     ).resolve()
     if readonly and (
         not (work / "inputs/manifest.json").is_file()
@@ -258,7 +314,7 @@ def _process(source, job, work, options, detail):
         elif reuse != work and (reuse / "predictions/observations_2d.npz").is_file():
             try:
                 obs, original_fingerprint = reusable_detection(
-                    reuse, source, inspection, options
+                    reuse, source, inspection, detect_key
                 )
                 if original_fingerprint != seq.fingerprint:
                     raise StaleStage("Reusable detection manifest differs")
@@ -282,13 +338,7 @@ def _process(source, job, work, options, detail):
                 "detect",
                 detect_key,
                 OUTPUTS["detect"],
-                lambda: pipeline.detect(
-                    seq,
-                    options.hand_model,
-                    options.detector_mode,
-                    options.detector_device,
-                    replace=options.replace,
-                ),
+                lambda: run_detection(source, seq, options, detect_key),
                 resume=options.resume,
                 replace=options.replace,
             )
@@ -471,6 +521,7 @@ def _job_results(results, resolved, work_root, options, workers, cpu_threads):
                     break
                 detail = dict(
                     sequence=str(source),
+                    detector=options.detector,
                     policy=asdict(options.policy),
                     mode=options.mode,
                     stages={},
@@ -537,11 +588,15 @@ def _job_results(results, resolved, work_root, options, workers, cpu_threads):
 def run_batch(data_root, batch_results, jobs, options, *, workers=1, cpu_threads=2):
     if not isinstance(workers, int) or not 1 <= workers <= 32 or cpu_threads < 1:
         raise ValueError("workers must be 1..32 and cpu_threads must be positive")
+    if options.detector == "fah" and options.mode != "report" and workers != 1:
+        raise ValueError("FAH requires --workers 1 to avoid competing for GPU memory")
     data_root = Path(data_root).resolve()
     output = Path(batch_results).absolute()
     work_root = (
         Path(options.work_root).absolute() if options.work_root is not None else None
     )
+    if options.detector == "fah" and work_root is None:
+        work_root = output / "work"
     resolved = []
     for job in jobs:
         source = (data_root / job["sequence"]).resolve()

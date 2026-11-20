@@ -24,19 +24,32 @@
 只选择该组直接子目录中的序列，不递归运行其它数据组，也不推断人员手形：
 
 ```bash
-JOBS=4 bash scripts/run_batch.sh \
-  /home/adminpc/hand-real-workspace/data/L1-L3-01 \
-  /home/adminpc/hand-real-workspace/hand_shapes/01_standard
+bash scripts/run_batch.sh "$DATA_PARENT" "$HOME/hand_shapes/02_standard"
 ```
 
-`JOBS` 默认2，范围1至32，表示同时处理的序列数，不是同时处理的数据组数。
+默认用 FAH 做 2D 检测，三角化、MANO 拟合及导出保持不变。
+检测使用 `$HOME/FAH/.venv/bin/python` 和 `$HOME/FAH/configs/local.json`，
+可通过 `FAH_PYTHON`、`FAH_CONFIG` 覆盖，不必手动激活环境。
+汇总在 `DATA_PARENT/batch_results_fah/summary.csv`，各序列输入与预测位于
+`batch_results_fah/work/<序列ID>/`；具体工作目录可在该序列的 details 报告中查看。
+分类链接仍指向原始序列，不替换原序列的 `hand_annotations/` 或人工 `final/`。
+`MODE=precheck` 可先验证检测和重建条件，再用同一目录续跑完整拟合。
+
+需要走原来的 MediaPipe 链路时：
+
+```bash
+DETECTOR=mediapipe bash scripts/run_batch.sh "$DATA_PARENT" "$HOME/hand_shapes/02_standard"
+```
+
+FAH 的检测和重建固定用一个 worker，避免多个序列同时加载模型；只读报告不受此限制。
+MediaPipe 的 `JOBS` 默认2，范围1至32，表示同时处理的序列数，不是同时处理的数据组数。
 多进程使用spawn，各序列独立工作；父进程统一维护一个summary.csv及四个分类目录。
 CUDA设备由所有worker共享，4并行不保证显存足够，OOM时减少JOBS。
 JOBS大于1时每个序列独立进程，普通异常或单个worker崩溃会记录失败，
 其它序列继续处理。JOBS=1保留原串行实现，隔离Python异常，但原生崩溃会
 终止该批次。机器级资源耗尽仍可能影响多个任务。不要同时启动两个任务写同一个结果目录。
 
-默认结果位置为 `数据组目录/batch_results/`：全组一份summary.csv，每个序列一行。
+MediaPipe 的默认结果位置为 `数据组目录/batch_results/`：全组一份summary.csv，每个序列一行。
 四个分类目录内是指向原序列的软链接，不移动或复制原始数据。例如：
 
 ```text
@@ -57,22 +70,23 @@ data/L1-L3-01/
     details/
 ```
 
-`L1-L3-02`、`L4-L6-02` 各自在自己的目录下生成同样的组级结果。
+在此 MediaPipe 布局中，`L1-L3-02`、`L4-L6-02` 各自在自己的目录下生成组级结果。
 每个序列的准备图像和预测保存在自己的 `hand_annotations/`，与旧单序列流程一致。
 分类链接指向原序列；打开后可找到该序列的hand_annotations。
 标注软件仍可直接 `python pose_annotator.py /path/to/Basic_Grip_01`，
 自动优先恢复final，否则读取predictions；本布局不要求改标注软件的路径逻辑。
-可以通过 `BATCH_RESULTS=/absolute/path` 固定输出目录。默认总是启用resume，
+可以通过 `BATCH_RESULTS=/absolute/path` 固定输出目录。两种后端应使用不同的输出目录。
+默认总是启用resume，
 不会像旧脚本那样看到hand_annotations存在就跳过；`REPLACE=1` 才允许重算已有
 未验证阶段（仍受final及导出元数据保护约束）。不要指向正在运行的旧批次目录。
 
 其它环境变量：`MODE=run|precheck|report`（默认run）、`DEVICE=cuda|cpu`、
 `CPU_THREADS=2`（每个worker）、`MANO_ROOT`、`HAND_MODEL`、`MANO_PYTHON`。
 优先使用仓库 `.venv/bin/python`，否则使用本机hocap-annotation Conda环境；
-检测和拟合使用同一Python，不再使用旧的DETECT_PYTHON分环境约定。
-需要后台运行时可用 `nohup env JOBS=4 bash scripts/run_batch.sh ... > batch.log 2>&1 &`。
+MediaPipe 使用该 Python；FAH 检测单独使用上文的 FAH 环境。
+需要后台运行时可用 `nohup bash scripts/run_batch.sh ... > batch.log 2>&1 &`。
 
-Python入口也可直接传 `--workers 4`（默认1）；改变并行数不改变阶段来源凭据。
+MediaPipe 的 Python 入口也可直接传 `--workers 4`（默认1）；改变并行数不改变阶段来源凭据。
 此前版本把结果放在batch_results/work中，本接口不会自动移动旧结果。
 迁移应在任务退出后，确认目标hand_annotations不存在，将完整工作目录迁回，
 校验图像与预测哈希并更新详细报告中的workdir；不要覆盖已有目录或人工final。
@@ -80,7 +94,9 @@ Python入口也可直接传 `--workers 4`（默认1）；改变并行数不改�
 
 ### 直接使用Python入口
 
-先使用小规模序列验证。默认输出到各序列的hand_annotations；需要隔离实验时，
+Python 入口保留 MediaPipe 兼容默认。显式传 `--detector fah` 即可使用 FAH，
+配置和解释器可用 `--fah-config`、`--fah-python` 指定。
+MediaPipe 默认输出到各序列的 hand_annotations；需要隔离实验时，
 显式增加 `--work-root /path/to/isolated_work`，不要直接覆盖生产结果：
 
 ```bash
@@ -174,7 +190,8 @@ right_valid_frames、left_valid_frames、reason。有效帧数来自通过质量
 尚未验证拟合的字段为空；已验证拟合但该手确实无有效结果时才写0。
 路径及工作目录详情可通过 `batch_index.json` 和 `details/` 对照。
 
-工作目录默认是每个原序列下的 `hand_annotations/`，不修改rgbd原始输入。
+MediaPipe 默认写原序列下的 `hand_annotations/`；FAH 默认写批量输出根下的 `work/`。
+两者都不修改 rgbd 原始输入。
 汇总输出根不能与任何原序列目录互相包含（可以放在数据组下，与各序列并列）。
 显式指定的 `--work-root` 同样不能与原序列互相包含，工作目录为其下的唯一ID目录。
 工作目录中存在 `final/` 时拒绝写入，即使指定replace也不例外；仅报告模式可只读检查。
@@ -191,12 +208,13 @@ RGB时间戳有限且递增（含VIDEO毫秒精度）、跨相机时间跨度。
 原始RGB、标定及帧清单按内容哈希。复用的prepared图像必须与当前原始图像
 去畸变后的清单和字节校验一致；输入改变、文件缺失或图像被替换均不能跳过。
 
-默认寻找原序列 `hand_annotations/` 的2D观测，可用 `--reuse-workdir-name`
+默认寻找原序列中与后端对应的 `hand_annotations_fah/` 或 `hand_annotations/` 的 2D 观测，可用 `--reuse-workdir-name`
 或job的 `reuse_workdir` 指定。只复用有匹配manifest、camera/frame顺序、有效数组、
 检测模型哈希及完整检测配置的观测。默认直接验证本序列hand_annotations中的结果；
 显式选择独立work-root时，合法的旧检测可以复制到独立工作目录，旧结果不动。
 若缺少可验证的旧检测配置，会记录原因并重新检测；不会猜测其检测参数。
-缺少本地检测模型时不能验证模型身份，应提供 `--hand-model`。
+MediaPipe 需要本地 `--hand-model`；FAH 需要本地配置及其引用的资产，
+会校验后端、姿态与检测权重指纹、配置和图像清单，不会复用旧的 MediaPipe 观测。
 
 本批量工具完成的阶段在 `batch_state.json` 写入输入/配置/实现版本及输出内容哈希。
 `--resume` 只跳过全部匹配的阶段。三角化绑定相机筛选配置和结果，拟合绑定

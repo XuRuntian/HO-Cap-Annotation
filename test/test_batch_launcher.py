@@ -53,6 +53,9 @@ class BatchLauncherTests(unittest.TestCase):
             "BATCH_RESULTS",
             "MANO_ROOT",
             "HAND_MODEL",
+            "DETECTOR",
+            "FAH_CONFIG",
+            "FAH_PYTHON",
         ):
             self.env.pop(key, None)
         self.env.update(HOCAP_REPO=str(self.repo), MANO_PYTHON=sys.executable)
@@ -66,11 +69,12 @@ class BatchLauncherTests(unittest.TestCase):
         )
 
     def test_old_interface_selects_only_direct_children_and_new_pipeline(self):
-        result = self.launch(JOBS="4")
+        result = self.launch(DETECTOR="mediapipe", JOBS="4")
         self.assertEqual(result.returncode, 0, result.stderr)
         args = json.loads(result.stdout.splitlines()[-1])
         self.assertEqual(args[0], str(self.data))
         self.assertEqual(args[args.index("--workers") + 1], "4")
+        self.assertEqual(args[args.index("--detector") + 1], "mediapipe")
         self.assertEqual(args[args.index("--hand-shape") + 1], str(self.shape))
         self.assertEqual(
             args[args.index("--sequences") + 1 :], ["./one", "./two with spaces"]
@@ -81,6 +85,20 @@ class BatchLauncherTests(unittest.TestCase):
         )
         self.assertNotIn("--replace", args)
         self.assertFalse((self.data / "one" / "hand_annotations").exists())
+
+    def test_default_fah_has_one_worker_and_separate_results(self):
+        result = self.launch(FAH_CONFIG="/path with spaces/local.json",
+                             FAH_PYTHON="/env/bin/python")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads(result.stdout.splitlines()[-1])
+        for option, value in {
+            "--detector": "fah", "--workers": "1",
+            "--batch-results": str(self.data / "batch_results_fah"),
+            "--fah-config": "/path with spaces/local.json",
+            "--fah-python": "/env/bin/python",
+        }.items():
+            self.assertEqual(args[args.index(option) + 1], value)
+        self.assertEqual(self.launch(JOBS="2").returncode, 2)
 
     def test_modes_output_override_replace_and_exit_status(self):
         result = self.launch(

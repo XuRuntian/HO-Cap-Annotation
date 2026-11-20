@@ -29,9 +29,10 @@ def main():
     p.add_argument(
         "--work-root",
         type=Path,
-        help="Opt-in independent workdirs; default: <sequence>/hand_annotations",
+        help="Default: <batch-results>/work for FAH, <sequence>/hand_annotations for MediaPipe",
     )
-    p.add_argument("--reuse-workdir-name", default="hand_annotations")
+    p.add_argument("--reuse-workdir-name",
+                   help="Default: hand_annotations_fah for FAH, hand_annotations for MediaPipe")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--replace", action="store_true")
     p.add_argument(
@@ -46,6 +47,9 @@ def main():
         / "config/checkpoints/mediapipe/hand_landmarker.task",
     )
     p.add_argument("--mano-root", type=Path, default=Path.home() / "models/mano")
+    p.add_argument("--detector", choices=["mediapipe", "fah"], default="mediapipe")
+    p.add_argument("--fah-config", type=Path, default=Path.home() / "FAH/configs/local.json")
+    p.add_argument("--fah-python", type=Path, default=Path.home() / "FAH/.venv/bin/python")
     p.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     p.add_argument("--detector-device", choices=["cpu", "gpu"], default="cpu")
     p.add_argument("--detector-mode", choices=["image", "video"], default="video")
@@ -75,6 +79,8 @@ def main():
             raise ValueError("cpu-threads must be positive")
         if not 1 <= a.workers <= 32:
             raise ValueError("workers must be between 1 and 32")
+        if a.detector == "fah" and a.mode != "report" and a.workers != 1:
+            raise ValueError("FAH requires --workers 1")
         root = a.data_root.resolve()
         if a.jobs_json:
             jobs = json.loads(a.jobs_json.read_text())
@@ -119,6 +125,9 @@ def main():
             reuse_workdir_name=a.reuse_workdir_name,
             hand_model=a.hand_model,
             mano_root=a.mano_root,
+            detector=a.detector,
+            fah_config=a.fah_config.expanduser().absolute(),
+            fah_python=a.fah_python.expanduser().absolute(),
             detector_mode=a.detector_mode,
             detector_device=a.detector_device,
             device=a.device,

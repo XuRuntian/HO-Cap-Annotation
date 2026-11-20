@@ -1,6 +1,6 @@
 # 六视角 RGB 手部估计链路
 
-本分支给已同步的 `rgbd/` 数据增加独立入口。复用 MediaPipe 检测、HO-Cap 三角化及 MANO 损失，不运行原来的物体、SAM、HoloLens、深度拟合或离屏渲染链路。原始八阶段脚本仍保留。
+本分支给已同步的 `rgbd/` 数据增加独立入口。支持 FAH 或 MediaPipe 作为 2D 检测后端，复用 HO-Cap 三角化及 MANO 损失，不运行原来的物体、SAM、HoloLens、深度拟合或离屏渲染链路。原始八阶段脚本仍保留。
 
 输入是采集工具产生的 `rgbd/frames.jsonl`、`cam*/calibration.json`、`calibration/extrinsics.json` 和 RGB 图像。要求六台相机、米制外参，且外参明确声明 `p_master = T_master_from_camera @ p_camera (homogeneous column vectors)`。不猜测其他格式的外参方向。不读取深度，也不重新同步。
 
@@ -11,7 +11,11 @@ cd ~/HO-Cap-Annotation
 bash scripts/run_rgb_hand_pipeline.sh ~/ego_datas/3D_Trajectory_Continuity_01
 ```
 
-默认 CUDA、平均手型，MediaPipe 检测仍使用 CPU，依次执行全部五个阶段，输出直接位于数据根目录的 `hand_annotations/predictions/`。检测和拟合都默认调用 `$HOME/miniconda3/envs/hocap-annotation/bin/python`，MANO 默认位于 `$HOME/models/mano`，无需手动激活环境或设置环境变量。不会自动安装依赖或下载模型。
+一键入口默认 FAH、CUDA 和平均手型，输出到 `hand_annotations_fah/predictions/`。
+FAH 检测使用 `$HOME/FAH/.venv/bin/python`，其余阶段默认使用
+`$HOME/miniconda3/envs/hocap-annotation/bin/python`，无需手动激活环境。
+要使用已标定的手型，显式传 `--hand-shape "$HOME/hand_shapes/02_standard"`。
+MANO 默认位于 `$HOME/models/mano`，不会自动安装依赖或下载模型。
 
 先做短测试：
 
@@ -20,17 +24,41 @@ bash scripts/run_rgb_hand_pipeline.sh ~/ego_datas/3D_Trajectory_Continuity_01 \
   --limit 3 --workdir /tmp/my-hand-test
 ```
 
-参数沿用 Python 入口，如 `--device cpu`、`--betas shape.json`、`--replace`。换机器可通过 `MANO_PYTHON`、`DETECT_PYTHON`、`MANO_ROOT`、`HAND_MODEL` 环境变量指定路径；未设置 `DETECT_PYTHON` 时跟随 `MANO_PYTHON`。失败立即停止。
+参数沿用 Python 入口，如 `--device cpu`、`--betas shape.json`、`--replace`。
+可通过 `FAH_PYTHON`、`FAH_CONFIG`、`MANO_PYTHON`、`MANO_ROOT` 指定路径；
+`DETECT_PYTHON` 可单独覆盖检测解释器。失败立即停止。
 
 本机单阶段续跑示例（不要重新执行已有的 prepare）：
 
 ```bash
 ~/miniconda3/envs/hocap-annotation/bin/python tools/rgbd_hand_pipeline.py \
   ~/ego_datas/3D_Trajectory_Continuity_01 --stage fit --device cuda \
-  --mano-root ~/models/mano --mean-hand
+  --detector fah --mano-root ~/models/mano --mean-hand
 ```
 
 若之前指定了 `--workdir`，续跑时必须传入相同目录。
+
+### 使用 FAH 做 2D 检测
+
+一键入口已默认使用 FAH。要切回原流程，传 `--detector mediapipe`，
+输出仍位于 `hand_annotations/predictions/`。Python 单阶段入口保留 MediaPipe 兼容默认，
+使用 FAH 时指定 `--detector fah`。显式指定 FAH 环境和配置的示例：
+
+```bash
+DETECT_PYTHON="$HOME/FAH/.venv/bin/python" \
+  bash scripts/run_rgb_hand_pipeline.sh "$DATA" \
+  --detector fah --fah-config "$HOME/FAH/configs/local.json" \
+  --limit 5 --workdir /tmp/hocap-fah-test
+```
+
+也可用 FAH 的 Python 单独运行 `tools/rgbd_hand_pipeline.py "$DATA" --stage detect`，
+传入同样的 `--detector`、`--fah-config` 和已经准备好的 `--workdir`。
+配置读取 `weights`、`sam3d`、`mano_dir`、`model` 和 `inference.device`；
+相对资产路径以配置文件所在目录为基准。FAH 固定使用 PyTorch 单帧模式，
+仅导出 2D 像素关节，不使用其 3D、视频跟踪或网格拟合。
+观测中的 `detection_score` 是 FAH 手部检测分数，不是 MediaPipe 的
+`handedness_score`。三角化、拟合、导出仍由 HO-Cap 环境执行。
+批量入口也支持 FAH，见 [批量流程](BATCH_HAND_PIPELINE.md)。
 
 当前机器验证（2026-11-07）：启动器3项测试通过；使用默认本机路径完成
 前3帧的 prepare/detect/triangulate/fit/export，三角化与拟合使用 CUDA。
@@ -40,7 +68,8 @@ bash scripts/run_rgb_hand_pipeline.sh ~/ego_datas/3D_Trajectory_Continuity_01 \
 
 ## 文件职责
 
-默认工作目录是 `DATA_ROOT/hand_annotations`，也可用 `--workdir` 指定独立开发目录。
+默认工作目录为 FAH 的 `DATA_ROOT/hand_annotations_fah` 或 MediaPipe 的
+`DATA_ROOT/hand_annotations`，也可用 `--workdir` 指定。
 
 ```text
 DATA_ROOT/
