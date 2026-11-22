@@ -60,13 +60,22 @@ class BatchLauncherTests(unittest.TestCase):
             self.env.pop(key, None)
         self.env.update(HOCAP_REPO=str(self.repo), MANO_PYTHON=sys.executable)
 
-    def launch(self, **env):
+    def launch(self, shape=None, **env):
         return subprocess.run(
-            ["bash", str(SCRIPT), str(self.data), str(self.shape)],
+            ["bash", str(SCRIPT), str(self.data), str(shape or self.shape)],
             env=self.env | env,
             capture_output=True,
             text=True,
         )
+
+    def test_betas_json_path_is_accepted_with_its_bundle(self):
+        beta = self.shape / "betas.json"
+        result = self.launch(shape=beta)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads(result.stdout.splitlines()[-1])
+        self.assertEqual(args[args.index("--hand-shape") + 1], str(self.shape))
+        (self.shape / "metadata.json").unlink()
+        self.assertEqual(self.launch(shape=beta).returncode, 2)
 
     def test_old_interface_selects_only_direct_children_and_new_pipeline(self):
         result = self.launch(DETECTOR="mediapipe", JOBS="4")

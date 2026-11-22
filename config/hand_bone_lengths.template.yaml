@@ -1,0 +1,59 @@
+# MANO 骨段参考长度。只填写可信的数值，没量的项目保持 null。
+# 写 31.5，不要写 "31.5 mm"；单位固定为毫米。
+#
+# 取对应的两个 MANO/OpenPose 3D 标志点之间的直线距离。
+# 腕点编号为 0，编号见各字段后的注释。指尖使用模型的指尖标志点。
+# 不要把皮肤横纹量到指尖的长度，直接当成模型关节之间的长度。
+#
+# 如果只知道某根手指三段长度的总和，可以加对应的
+# thumb_total / index_total / middle_total / ring_total / little_total。
+# 同一根手指填了总长，就不要同时填它的全部三段。
+units: mm
+
+right:  # 右手
+  palm_length: null       # 掌长：腕点 0 → 中指根 9
+  palm_width: null        # 掌宽：食指根 5 → 小指根 17，不是皮肤外缘宽度
+
+  thumb_cmc_to_mcp: null  # 拇指根段：1 → 2
+  thumb_mcp_to_ip: null   # 拇指中段：2 → 3
+  thumb_ip_to_tip: null   # 拇指末段：3 → 4
+
+  index_proximal: null    # 食指近段：5 → 6
+  index_middle: null      # 食指中段：6 → 7
+  index_distal: null      # 食指末段：7 → 8
+
+  middle_proximal: null   # 中指近段：9 → 10
+  middle_middle: null     # 中指中段：10 → 11
+  middle_distal: null     # 中指末段：11 → 12
+
+  ring_proximal: null     # 无名指近段：13 → 14
+  ring_middle: null       # 无名指中段：14 → 15
+  ring_distal: null       # 无名指末段：15 → 16
+
+  little_proximal: null   # 小指近段：17 → 18
+  little_middle: null     # 小指中段：18 → 19
+  little_distal: null     # 小指末段：19 → 20
+
+left:  # 左手，编号与右手一致；两只手分别测量
+  palm_length: null       # 掌长：腕点 0 → 中指根 9
+  palm_width: null        # 掌宽：食指根 5 → 小指根 17，不是皮肤外缘宽度
+
+  thumb_cmc_to_mcp: null  # 拇指根段：1 → 2
+  thumb_mcp_to_ip: null   # 拇指中段：2 → 3
+  thumb_ip_to_tip: null   # 拇指末段：3 → 4
+
+  index_proximal: null    # 食指近段：5 → 6
+  index_middle: null      # 食指中段：6 → 7
+  index_distal: null      # 食指末段：7 → 8
+
+  middle_proximal: null   # 中指近段：9 → 10
+  middle_middle: null     # 中指中段：10 → 11
+  middle_distal: null     # 中指末段：11 → 12
+
+  ring_proximal: null     # 无名指近段：13 → 14
+  ring_middle: null       # 无名指中段：14 → 15
+  ring_distal: null       # 无名指末段：15 → 16
+
+  little_proximal: null   # 小指近段：17 → 18
+  little_middle: null     # 小指中段：18 → 19
+  little_distal: null     # 小指末段：19 → 20

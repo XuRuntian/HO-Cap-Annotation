@@ -36,6 +36,7 @@ class HandShapeBundleTests(unittest.TestCase):
             with patch('subprocess.run', side_effect=AssertionError('No subprocess allowed')), patch(
                     'hocap_annotation.hand_shape.model_basis_hashes', return_value=bases):
                 self.assertEqual(load_hand_shape(root, root), [[1.] * 10] * 2)
+                self.assertEqual(load_hand_shape(beta, root), [[1.] * 10] * 2)
             self.assertEqual(before, {p.name: p.read_bytes() for p in root.iterdir()})
             with patch('hocap_annotation.hand_shape.model_basis_hashes', return_value={}):
                 with self.assertRaisesRegex(ValueError, 'basis mismatch'):

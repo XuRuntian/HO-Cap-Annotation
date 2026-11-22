@@ -11,6 +11,8 @@ from .rgbd_data import digest
 
 def load_hand_shape(directory, mano_root=None, *, verify_basis=True):
     directory = Path(directory).expanduser()
+    if directory.name == "betas.json" and not directory.is_dir():
+        directory = directory.parent
     if (directory / "trial_shape.npz").is_file() and not (directory / "betas.json").is_file():
         raise ValueError("Legacy trial_shape.npz-only output: export betas.json and metadata.json "
                          "on the calibration machine first; EasyMocap is not invoked here")

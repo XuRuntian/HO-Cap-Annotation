@@ -4,7 +4,7 @@ set -euo pipefail
 
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
     printf '%s\n' \
-      'Usage: bash scripts/run_batch.sh DATA_PARENT HAND_SHAPE_DIRECTORY' \
+      'Usage: bash scripts/run_batch.sh DATA_PARENT HAND_SHAPE_DIRECTORY_OR_BETAS_JSON' \
       'Only direct child sequences containing rgbd/ are selected.' \
       'Default: FAH, one worker, results and predictions under DATA_PARENT/batch_results_fah.' \
       'DETECTOR=mediapipe restores the original detector and output locations.' \
@@ -13,8 +13,8 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
       'Resume is always enabled; REPLACE=1 explicitly permits stale-stage recomputation.'
     exit 0
 fi
-if [[ $# -ne 2 || ! -d $1 || ! -d $2 ]]; then
-    echo 'Usage: bash scripts/run_batch.sh DATA_PARENT HAND_SHAPE_DIRECTORY' >&2
+if [[ $# -ne 2 || ! -d $1 ]]; then
+    echo 'Usage: bash scripts/run_batch.sh DATA_PARENT HAND_SHAPE_DIRECTORY_OR_BETAS_JSON' >&2
     exit 2
 fi
 DETECTOR=${DETECTOR:-fah}
@@ -30,11 +30,15 @@ if [[ ! $JOBS =~ ^[1-9][0-9]?$ ]] || (( JOBS > 32 )); then
 fi
 REPO=${HOCAP_REPO:-"$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"}
 ROOT=$(cd -- "$1" && pwd -P)
-SHAPE=$(cd -- "$2" && pwd -P)
+SHAPE=$2
+if [[ -f "$SHAPE" && ${SHAPE##*/} == betas.json ]]; then
+    SHAPE=$(dirname -- "$SHAPE")
+fi
 if [[ ! -f "$SHAPE/betas.json" || ! -f "$SHAPE/metadata.json" ]]; then
     echo 'A standard hand shape directory requires betas.json and metadata.json; convert legacy trial_shape first.' >&2
     exit 2
 fi
+SHAPE=$(cd -- "$SHAPE" && pwd -P)
 if [[ -z ${MANO_PYTHON:-} ]]; then
     if [[ -x "$REPO/.venv/bin/python" ]]; then
         MANO_PYTHON="$REPO/.venv/bin/python"

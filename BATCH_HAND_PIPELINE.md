@@ -18,9 +18,62 @@
 
 ## 命令
 
+### RGB 手形标定与批量标注
+
+每位受试者用一段多视角 RGB 采集标定一次。这里传入实际的 `clip_000`，
+其中包含 `rgbd/camXX/color_*.jpg` 和彩色相机内参。抽帧不要求相机间同步，
+不读取深度或相机外参。标定需要包含
+[原生左右手 MANO 拟合支持](https://github.com/XuRuntian/FAH/commit/0fb2c540ca97d9844694ee391a3fe266c39f6548)
+的 FAH 版本。标定环境、推理配置和 MANO 目录分别由 `FAH_PYTHON`、`FAH_CONFIG`、
+`MANO_PYTHON`、`MANO_ROOT` 指定。
+
+```bash
+bash scripts/calibrate_rgb_hand_shape.sh "$HOME/文档/head_clip/01/clip_000" \
+  "$HOME/hand_shapes/02_fah_v1_trial"
+bash scripts/run_batch.sh "$HOME/文档/normal-samples-02/L1-L3-02" \
+  "$HOME/hand_shapes/02_fah_v1_trial/betas.json"
+```
+
+标定输出目录必须是新的。双手各自按相机聚合，保存 `betas.json` 和同目录的
+`metadata.json`（MANO 基底、文件校验值和标定来源）；新结果默认标记为待复核。
+跑批可传上述文件或它所在的目录。批处理只读该手形，不更新 β；后续每段的
+`mano.npz` 是包含逐帧姿态的标注结果，不是另一次标定。批量输入虽然仍位于
+各序列的 `rgbd/`，但只需要 RGB、相机标定和同步帧清单，不需要深度图。
+
+### 骨段长度修正（选做）
+
+默认直接用 FAH 标定结果。只有拿到与 MANO 标志点定义一致的参考长度时，才运行
+下面的命令。推荐使用[带中文注释的 YAML 模板](config/hand_bone_lengths.template.yaml)；
+也兼容 JSON。左右手可分别提供目标，保持 `null` 的字段跳过，不填的一侧原样保留。
+
+```yaml
+units: mm
+left:
+  thumb_ip_to_tip: 31.0  # 拇指末段
+  index_total: 76.0      # 食指三段长度之和
+```
+
+```bash
+"${MANO_PYTHON:-$HOME/miniconda3/envs/hocap-annotation/bin/python}" \
+  tools/refine_hand_shape_lengths.py "$HOME/hand_shapes/02_fah_v1_trial/betas.json" \
+  /path/to/lengths.yaml "$HOME/hand_shapes/02_fah_refined_v1"
+```
+
+示例数字不是 02 号被试的实测值。长度基于平手姿态下的 MANO 关节点和网格指尖，
+并非从皮肤横纹量到指尖的外部长度，不能不加区分地填入：
+
+- `thumb_cmc_to_mcp`、`thumb_mcp_to_ip`、`thumb_ip_to_tip`：拇指三段。
+- `index`、`middle`、`ring`、`little` 可接 `_proximal`、`_middle`、
+  `_distal` 分别指定三段；五指均可用 `_total` 指定三段长度之和。
+- `palm_length` 是腕点到中指根，`palm_width` 是食指根到小指根。
+
+修正限制 β 的变化，并保护未指定的长度，不强行追求目标零误差。
+查看新版的 `refinement.json` 中的修正前后长度和剩余偏差，确认投影后再用于跑批。
+输出到新目录，原手型不改；不在每帧改变 β，也不要求增加深度或真人测量流程。
+
 ### 兼容旧批量接口
 
-新版 `scripts/run_batch.sh` 保留“数据组目录 + 手形目录”两个位置参数，
+新版 `scripts/run_batch.sh` 保留“数据组目录 + 手形路径”两个位置参数，
 只选择该组直接子目录中的序列，不递归运行其它数据组，也不推断人员手形：
 
 ```bash
