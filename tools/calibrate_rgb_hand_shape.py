@@ -8,9 +8,10 @@ import sys
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from hocap_annotation.rgbd_data import atomic_json, digest, read_json, rectification_maps
+from hocap_annotation.rgbd_data import atomic_json, atomic_write, digest, read_json, rectification_maps
 
 SIDES = ("right", "left")
+LENGTH_TEMPLATE = Path(__file__).resolve().parents[1] / "config/hand_bone_lengths.template.yaml"
 
 
 def collect(clip, config, output, count):
@@ -111,6 +112,7 @@ def publish(source, output, mano):
         raise ValueError("FAH and HO-Cap MANO bases differ; cannot publish either side")
     betas, counts = aggregate(candidate["samples"], candidate["cameras"])
     models = {side: digest(mano / f"MANO_{side.upper()}.pkl") for side in SIDES}
+    template = LENGTH_TEMPLATE.read_bytes()
     output.mkdir(parents=True, exist_ok=False)
     target = output / "betas.json"
     atomic_json(target, betas.tolist())
@@ -124,6 +126,7 @@ def publish(source, output, mano):
         betas_sha256=digest(target),
     ))
     atomic_json(output / "calibration_samples.json", candidate)
+    atomic_write(output / "lengths.yaml", lambda f: f.write(template))
     print(target)
 
 

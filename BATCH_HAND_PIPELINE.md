@@ -36,6 +36,7 @@ bash scripts/run_batch.sh "$HOME/文档/normal-samples-02/L1-L3-02" \
 
 标定输出目录必须是新的。双手各自按相机聚合，保存 `betas.json` 和同目录的
 `metadata.json`（MANO 基底、文件校验值和标定来源）；新结果默认标记为待复核。
+同目录自动生成空白的中文 `lengths.yaml`，仅在需要人工修正时填写。
 跑批可传上述文件或它所在的目录。批处理只读该手形，不更新 β；后续每段的
 `mano.npz` 是包含逐帧姿态的标注结果，不是另一次标定。批量输入虽然仍位于
 各序列的 `rgbd/`，但只需要 RGB、相机标定和同步帧清单，不需要深度图。
@@ -43,7 +44,8 @@ bash scripts/run_batch.sh "$HOME/文档/normal-samples-02/L1-L3-02" \
 ### 骨段长度修正（选做）
 
 默认直接用 FAH 标定结果。只有拿到与 MANO 标志点定义一致的参考长度时，才运行
-下面的命令。推荐使用[带中文注释的 YAML 模板](config/hand_bone_lengths.template.yaml)；
+下面的命令。直接填写手形目录里的 `lengths.yaml`；
+旧结果没有此文件时，可使用[带中文注释的 YAML 模板](config/hand_bone_lengths.template.yaml)。
 也兼容 JSON。左右手可分别提供目标，保持 `null` 的字段跳过，不填的一侧原样保留。
 
 ```yaml
@@ -56,7 +58,7 @@ left:
 ```bash
 "${MANO_PYTHON:-$HOME/miniconda3/envs/hocap-annotation/bin/python}" \
   tools/refine_hand_shape_lengths.py "$HOME/hand_shapes/02_fah_v1_trial/betas.json" \
-  /path/to/lengths.yaml "$HOME/hand_shapes/02_fah_refined_v1"
+  "$HOME/hand_shapes/02_fah_v1_trial/lengths.yaml" "$HOME/hand_shapes/02_fah_refined_v1"
 ```
 
 示例数字不是 02 号被试的实测值。长度基于平手姿态下的 MANO 关节点和网格指尖，
