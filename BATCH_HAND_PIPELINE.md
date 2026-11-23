@@ -36,7 +36,8 @@ bash scripts/run_batch.sh "$HOME/文档/normal-samples-02/L1-L3-02" \
 
 标定输出目录必须是新的。双手各自按相机聚合，保存 `betas.json` 和同目录的
 `metadata.json`（MANO 基底、文件校验值和标定来源）；新结果默认标记为待复核。
-同目录自动生成空白的中文 `lengths.yaml`，仅在需要人工修正时填写。
+同目录自动生成两份空白中文表：`lengths.yaml`（MANO 骨段）和
+`lengths_niosh.yaml`（真人外部尺寸），仅在需要人工修正时选填其中一份。
 跑批可传上述文件或它所在的目录。批处理只读该手形，不更新 β；后续每段的
 `mano.npz` 是包含逐帧姿态的标注结果，不是另一次标定。批量输入虽然仍位于
 各序列的 `rgbd/`，但只需要 RGB、相机标定和同步帧清单，不需要深度图。
@@ -72,6 +73,32 @@ left:
 修正限制 β 的变化，并保护未指定的长度，不强行追求目标零误差。
 查看新版的 `refinement.json` 中的修正前后长度和剩余偏差，确认投影后再用于跑批。
 输出到新目录，原手型不改；不在每帧改变 β，也不要求增加深度或真人测量流程。
+
+### 真人外部尺寸修正（选做）
+
+按 [NIOSH Figure 1](https://stacks.cdc.gov/view/cdc/36887/cdc_36887_DS1.pdf#page=16)
+和[附录 A](https://stacks.cdc.gov/view/cdc/36887/cdc_36887_DS1.pdf#page=13)量手掌摊开时的
+外部尺寸，填写手形目录内的 `lengths_niosh.yaml`。不需要把实测值换算成骨长。
+早期手形目录没有测量表时，可使用
+[NIOSH 中文模板](config/hand_niosh_external.template.yaml)。单位为毫米，可只填任意几项、
+也可以只填一只手；全空时返回原手形文件，不生成新目录。
+
+支持 Figure 1 的 14 项：整手长、手宽、掌长、掌宽，以及每根手指的长度和宽度。
+其中手宽（2）是四指根部附近外缘之间的距离，掌宽（4）用掌横纹附近的外缘，
+五指宽在各自从指根数的第一道关节处横向测量。工具比较平手姿态下 MANO 网格的
+同类投影尺寸，用固定的网格表面标记近似腕横纹、指根和可见外缘。它们不是内部
+关节中心，也不是对真人皮肤横纹或指宽的精确重建。整手长是掌长加中指长；
+三项全填时，整手长仅写入报告（`used_in_fit: false`），不重复加权。
+已有的 `lengths.yaml` 仍按 MANO 骨段解释；两套字段不能混填。
+
+```bash
+"${MANO_PYTHON:-$HOME/miniconda3/envs/hocap-annotation/bin/python}" \
+  tools/refine_hand_shape_lengths.py "$HOME/hand_shapes/02_fah_v1_trial/betas.json" \
+  "$HOME/hand_shapes/02_fah_v1_trial/lengths_niosh.yaml" "$HOME/hand_shapes/02_fah_niosh_v1"
+```
+
+输出仍是 `betas.json`、`metadata.json` 和 `refinement.json`。
+修正保持接近原 β，保护没填写的尺寸；查看报告和独立片段上的双手投影后再使用。
 
 ### 兼容旧批量接口
 

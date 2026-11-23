@@ -42,7 +42,63 @@ class HandShapeLengthRefinementTests(unittest.TestCase):
             raw["left"]["thumb_ip_to_tip"] = 31.5
             with target.open("w", encoding="utf-8") as stream:
                 YAML(typ="safe").dump(raw, stream)
-            self.assertEqual(tool.read_targets(target), {"left": {"thumb_ip_to_tip": 31.5}})
+            self.assertEqual(tool.read_targets(target),
+                             (tool.BONE_DEFINITION, {"left": {"thumb_ip_to_tip": 31.5}}))
+
+    def test_surface_template_accepts_blank_and_partial_but_not_bones(self):
+        from ruamel.yaml import YAML
+
+        template = path.parents[1] / "config/hand_niosh_external.template.yaml"
+        raw = YAML(typ="safe").load(template.read_text(encoding="utf-8"))
+        self.assertEqual(tool.read_targets(template), (tool.SURFACE_DEFINITION, {}))
+        for side in tool.SIDES:
+            self.assertEqual(set(raw[side]), set(tool.NIOSH_METRICS))
+        raw["left"]["thumb_length"] = 60.5
+        self.assertEqual(tool.parse_targets(raw),
+                         (tool.SURFACE_DEFINITION, {"left": {"thumb_length": 60.5}}))
+        raw["left"]["thumb_ip_to_tip"] = 31.0
+        with self.assertRaisesRegex(ValueError, "unknown metric"):
+            tool.parse_targets(raw)
+
+    def test_surface_metric_uses_mesh_landmarks_in_projection(self):
+        from hocap_annotation.hand_surface_measurements import ANCHORS, measure_surface
+
+        model = np.zeros((778, 3))
+        for name, x, z in (("wrist", 0, 0), ("middle_base", -90, 0),
+                           ("middle_tip", -170, 4), ("thumb_base", -40, 45),
+                           ("thumb_tip", -88, 81), ("index_edge", -88, 35),
+                           ("little_edge", -69, -55)):
+            ids, weights = ANCHORS[name]
+            self.assertAlmostEqual(sum(weights), 1)
+            model[list(ids)] = [x, z * 10, z]
+        result = measure_surface(model)
+        self.assertAlmostEqual(result["thumb_length"], 60.0)
+        self.assertAlmostEqual(result["hand_length"], 90 + np.hypot(80, 4))
+        self.assertAlmostEqual(result["hand_breadth"], np.hypot(19, 90))
+
+    def test_surface_breadth_constraints_and_derived_hand_length(self):
+        from hocap_annotation.hand_surface_measurements import ANCHORS, measure_surface
+
+        base = np.zeros((778, 3))
+        for name, x, z in (("wrist", 0, 0), ("middle_base", -90, 0),
+                           ("middle_tip", -170, 0), ("thumb_width_0", -60, 55),
+                           ("thumb_width_1", -60, 75), ("palm_index_edge", -78, 34),
+                           ("palm_little_edge", -63, -50)):
+            base[list(ANCHORS[name][0])] = [x, 0, z]
+
+        def mesh(beta):
+            m = base.copy()
+            m[list(ANCHORS["thumb_width_1"][0]), 2] += 2 * beta[0]
+            return m
+
+        targets = {"hand_length": 210, "palm_length": 90, "middle_length": 80,
+                   "thumb_breadth": 18, "palm_breadth": np.hypot(15, 84)}
+        beta, report = tool.refine_surface(np.zeros(10), mesh, targets, 1.5)
+        final = measure_surface(mesh(beta))
+        self.assertFalse(report["target_mm"]["hand_length"]["used_in_fit"])
+        self.assertTrue(report["target_mm"]["palm_breadth"]["used_in_fit"])
+        self.assertAlmostEqual(final["hand_length"], 170)
+        self.assertLess(abs(final["thumb_breadth"] - 18), .3)
 
     def test_strict_targets(self):
         for payload in (
@@ -76,6 +132,11 @@ class HandShapeLengthRefinementTests(unittest.TestCase):
                                                 hand_order=list(tool.SIDES),
                                                 model_sha256=models, betas_sha256=source_hash)))
             meta_hash = digest(metadata)
+            empty = root / "empty.json"
+            empty.write_text(json.dumps(dict(units="mm", definition=tool.SURFACE_DEFINITION)))
+            empty_output = root / "empty"
+            self.assertEqual(tool.run(source, empty, empty_output, assets), source)
+            self.assertFalse(empty_output.exists())
             target = root / "target.json"
             target.write_text(json.dumps(dict(units="mm", left={"thumb_ip_to_tip": 18})))
             out = root / "v2"

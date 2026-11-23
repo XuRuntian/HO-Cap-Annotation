@@ -50,6 +50,8 @@ class AggregateShapeTests(unittest.TestCase):
                 calibration.publish(source, out, root)
                 lengths = out / "lengths.yaml"
                 self.assertEqual(lengths.read_bytes(), calibration.LENGTH_TEMPLATE.read_bytes())
+                self.assertEqual((out / "lengths_niosh.yaml").read_bytes(),
+                                 calibration.SURFACE_TEMPLATE.read_bytes())
                 base_hash = digest(out / "betas.json")
                 lengths.write_text("units: mm\nleft:\n  thumb_ip_to_tip: 31.5\n")
                 self.assertEqual(load_hand_shape(out / "betas.json", root), [[2.5] * 10, [12.5] * 10])
